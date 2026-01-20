@@ -107,17 +107,59 @@ if uploaded_file:
     st.divider()
     st.subheader("🤖 AI Data Architect")
     if api_key:
-        llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=api_key)
-        agent = create_pandas_dataframe_agent(llm, df_filtered, allow_dangerous_code=True)
-        
-        query = st.text_input("Ask about this specific data (e.g., 'Summarize the common blockers for this manager')")
-        if query:
-            with st.spinner("AI is analyzing text and numbers..."):
-                response = agent.run(query)
-                st.write(response)
+        try:
+        # 1. Use Flash for higher rate limits and faster response
+        # 2. Set safety_settings to 'BLOCK_NONE' if data is being flagged incorrectly
+        llm = ChatGoogleGenerativeAI(
+            model="gemini-1.5-flash", 
+            google_api_key=api_key,
+            temperature=0,
+            safety_settings={
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+            }
+        )
+
+        # 3. Use 'tool-calling' agent type for better reliability with newer Gemini models
+        agent = create_pandas_dataframe_agent(
+            llm, 
+            df_filtered, 
+            verbose=False, 
+            allow_dangerous_code=True,
+            handle_parsing_errors=True,
+            agent_type="tool-calling"  # This is more stable for the current SDK
+        )
+
+        # Chat interface
+        if "messages" not in st.session_state:
+            st.session_state.messages = []
+
+        for message in st.session_state.messages:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
+
+        if query := st.chat_input("Ask about the data..."):
+            st.session_state.messages.append({"role": "user", "content": query})
+            with st.chat_message("user"):
+                st.markdown(query)
+
+            with st.chat_message("assistant"):
+                with st.spinner("AI is calculating..."):
+                    try:
+                        response = agent.run(query)
+                        st.markdown(response)
+                        st.session_state.messages.append({"role": "assistant", "content": response})
+                    except Exception as e:
+                        st.error(f"The AI hit a limit or encountered an error. Try rephrasing or wait a moment. Detail: {e}")
+
+    except Exception as init_err:
+        st.error(f"Failed to initialize AI: {init_err}")
     else:
         st.warning("Enter API Key to enable natural language chat.")
 
 else:
 
     st.info("Please upload the Excel/CSV file to begin.")
+
