@@ -3,6 +3,7 @@ import pandas as pd
 import plotly.express as px
 from langchain_experimental.agents import create_pandas_dataframe_agent
 from langchain_openai import ChatOpenAI
+import os
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="tsworks | Insights Engine", layout="wide")
@@ -22,7 +23,10 @@ st.caption("Custom Analytics powered by OpenAI ChatGPT")
 with st.sidebar:
     st.header("Setup")
     # Switch to OpenAI Key input
-    api_key = st.text_input("Enter OpenAI API Key", type="password")
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        st.error("OpenAI API key not configured. Please set OPENAI_API_KEY.")
+        st.stop()
     uploaded_file = st.file_uploader("Upload 'tsworks Employee Pulse' Excel", type=["xlsx", "csv"])
 
 if uploaded_file:
@@ -236,6 +240,7 @@ if uploaded_file:
                 st.error(f"AI Setup Error: {init_err}")
         else:
             st.warning("Enter OpenAI API Key to begin.")
+
 
 
 
