@@ -153,14 +153,13 @@ if uploaded_file:
                             st.session_state.messages.append({"role": "assistant", "content": response})
                         except Exception as e:
                             st.error(f"The AI hit a limit or encountered an error. Try rephrasing or wait a moment. Detail: {e}")
-
-    except Exception as init_err:
-        st.error(f"Failed to initialize AI: {init_err}")
+    
     else:
         st.warning("Enter API Key to enable natural language chat.")
 
 else:
 
     st.info("Please upload the Excel/CSV file to begin.")
+
 
 
