@@ -181,119 +181,260 @@ if uploaded_file:
 
         # --- AI AGENT SECTION ---
         st.divider()
-        #st.subheader("🤖 AI Chat Bot")
+
+        # Helpers for chronological ordering + time filtering
+        MONTH_ORDER = {"Jan":1,"Feb":2,"Mar":3,"Apr":4,"May":5,"Jun":6,
+                       "Jul":7,"Aug":8,"Sep":9,"Oct":10,"Nov":11,"Dec":12}
+        
+        def add_period_cols(d: pd.DataFrame) -> pd.DataFrame:
+            d = d.copy()
+            d["Year"] = pd.to_numeric(d["Year"], errors="coerce")
+            d["Month"] = d["Month"].astype(str).str.strip().str[:3].str.title()
+            d["_MonthNum"] = d["Month"].map(MONTH_ORDER)
+            d["PeriodDate"] = pd.to_datetime(
+                d["Year"].astype("Int64").astype(str) + "-" + d["_MonthNum"].astype("Int64").astype(str) + "-01",
+                errors="coerce"
+            )
+            d["_PeriodLabel"] = d["Month"] + " " + d["Year"].astype("Int64").astype(str)
+            d["_PeriodKey"] = d["Year"] * 100 + d["_MonthNum"]
+            return d
+        
+        def apply_time_filter(d: pd.DataFrame, time_filter: str, sel_year, sel_month) -> pd.DataFrame:
+            d = add_period_cols(d)
+            d = d.dropna(subset=["PeriodDate"])
+        
+            if time_filter == "this_month":
+                # interpret as UI-selected
+                return d[(d["Year"] == sel_year) & (d["Month"] == sel_month)].copy()
+        
+            if time_filter == "last_6_months":
+                end = d["PeriodDate"].max()
+                start = end - pd.DateOffset(months=6)
+                return d[(d["PeriodDate"] >= start) & (d["PeriodDate"] <= end)].copy()
+        
+            if time_filter == "last_quarter":
+                # last 3 months from max date in dataset
+                end = d["PeriodDate"].max()
+                start = end - pd.DateOffset(months=3)
+                return d[(d["PeriodDate"] >= start) & (d["PeriodDate"] <= end)].copy()
+        
+            # "all" or unknown
+            return d.copy()
+        
+        def build_chart(chart_df: pd.DataFrame, spec: dict):
+            chart_type = (spec.get("chart_type") or "line").lower().strip()
+            x = spec.get("x")
+            y = spec.get("y")
+            group_by = spec.get("group_by")
+        
+            # Safety: allow only known columns
+            allowed_cols = set(chart_df.columns)
+            if x not in allowed_cols:
+                raise ValueError(f"Invalid x column: {x}")
+            if group_by and group_by not in allowed_cols:
+                raise ValueError(f"Invalid group_by column: {group_by}")
+        
+            # Handle common aggregations in y
+            # Examples AI can send: "Sat_Score_mean", "Mood_Score_mean", "count"
+            # Or it can send raw column names like "Sat_Score"
+            agg = None
+            y_col = y
+        
+            if isinstance(y, str):
+                if y.lower() in ["count", "responses", "total_responses"]:
+                    agg = "count"
+                    y_col = None
+                elif y.endswith("_mean"):
+                    agg = "mean"
+                    y_col = y.replace("_mean", "")
+                elif y.endswith("_avg"):
+                    agg = "mean"
+                    y_col = y.replace("_avg", "")
+                elif y.endswith("_sum"):
+                    agg = "sum"
+                    y_col = y.replace("_sum", "")
+        
+            # If y_col is a column, validate
+            if y_col and y_col not in allowed_cols:
+                raise ValueError(f"Invalid y column: {y_col}")
+        
+            # If x is Month/Year-like, force chronological plotting
+            time_like = x in ["Month", "Year", "_PeriodLabel", "PeriodDate", "_PeriodKey"]
+        
+            if time_like:
+                chart_df = add_period_cols(chart_df).dropna(subset=["PeriodDate"])
+        
+                # Pre-aggregate by period (+ group_by if present)
+                group_cols = ["PeriodDate", "_PeriodLabel"]
+                if group_by:
+                    group_cols.append(group_by)
+        
+                if agg == "count":
+                    plot_df = chart_df.groupby(group_cols, as_index=False).size().rename(columns={"size": "Value"})
+                    y_plot = "Value"
+                else:
+                    # default to mean for trend charts if no agg specified
+                    if agg is None:
+                        agg = "mean"
+                    plot_df = chart_df.groupby(group_cols, as_index=False).agg({y_col: agg})
+                    y_plot = y_col
+        
+                plot_df = plot_df.sort_values("PeriodDate")
+        
+                if chart_type == "line":
+                    fig = px.line(plot_df, x="_PeriodLabel", y=y_plot, color=group_by, markers=True)
+                elif chart_type == "bar":
+                    fig = px.bar(plot_df, x="_PeriodLabel", y=y_plot, color=group_by)
+                else:
+                    # pie doesn't make sense over time; fallback to bar
+                    fig = px.bar(plot_df, x="_PeriodLabel", y=y_plot, color=group_by)
+        
+                return fig
+        
+            # Non-time charts
+            if chart_type == "pie":
+                # pie expects names + values
+                if agg == "count":
+                    plot_df = chart_df.groupby(x, as_index=False).size().rename(columns={"size": "Value"})
+                    fig = px.pie(plot_df, names=x, values="Value", hole=0.4)
+                else:
+                    # aggregate numeric column by x
+                    if agg is None:
+                        agg = "mean"
+                    plot_df = chart_df.groupby(x, as_index=False).agg({y_col: agg})
+                    fig = px.pie(plot_df, names=x, values=y_col, hole=0.4)
+                return fig
+        
+            if chart_type == "bar":
+                if agg == "count":
+                    plot_df = chart_df.groupby([x] + ([group_by] if group_by else []), as_index=False).size().rename(columns={"size":"Value"})
+                    fig = px.bar(plot_df, x=x, y="Value", color=group_by)
+                else:
+                    if agg is None:
+                        agg = "mean"
+                    group_cols = [x] + ([group_by] if group_by else [])
+                    plot_df = chart_df.groupby(group_cols, as_index=False).agg({y_col: agg})
+                    fig = px.bar(plot_df, x=x, y=y_col, color=group_by)
+                return fig
+        
+            # Default: line
+            if agg is None:
+                agg = "mean"
+            group_cols = [x] + ([group_by] if group_by else [])
+            plot_df = chart_df.groupby(group_cols, as_index=False).agg({y_col: agg})
+            fig = px.line(plot_df, x=x, y=y_col, color=group_by, markers=True)
+            return fig
+        
+        
         with st.expander("🤖 AI ChatBot (Ask questions about the data)", expanded=False):
             if api_key:
                 try:
-                    # Initialize OpenAI LLM                
                     llm = ChatOpenAI(model="gpt-4.1-mini", openai_api_key=api_key, temperature=0)
-    
-    
-                    CUSTOM_PREFIX = """You are a Senior Manager at tsworks.
-                        You can:
-                        - Answer questions in text
-                        - Request charts when visualization adds value
-                        
-                        If a chart is useful, respond in this EXACT JSON format (and nothing else):
-                        
-                        {
-                          "chart_required": true,
-                          "chart_type": "line | bar | pie",
-                          "x": "<column name>",
-                          "y": "<column name or aggregation>",
-                          "group_by": "<optional column>",
-                          "time_filter": "this_month | last_6_months | last_quarter | all",
-                          "summary": "<short executive insight>"
-                        }
-                        
-                        If no chart is needed, respond normally in Markdown."""
-                    
+        
+                    CUSTOM_PREFIX = """
+        You are a Senior Manager at tsworks.
+        
+        You can answer questions in Markdown.
+        If a chart is useful, respond with ONLY valid JSON (no extra text) using this schema:
+        
+        {
+          "chart_required": true,
+          "chart_type": "line" | "bar" | "pie",
+          "x": "Month" | "Department" | "Reporting Manager" | "Year" | "<other column>",
+          "y": "Sat_Score_mean" | "Mood_Score_mean" | "count" | "<numeric_column>_mean",
+          "group_by": "<optional column>",
+          "time_filter": "this_month" | "last_6_months" | "last_quarter" | "all",
+          "summary": "<short executive insight>"
+        }
+        
+        Rules:
+        - For trends over time, use x="Month" and y="Sat_Score_mean" or "Mood_Score_mean" (or "count").
+        - If the question asks "this month", use time_filter="this_month" (UI-selected).
+        - Keep it professional.
+        """
+        
                     agent = create_pandas_dataframe_agent(
-                        llm, df, verbose=False, allow_dangerous_code=True,
-                        handle_parsing_errors=True, agent_type="openai-tools", prefix=CUSTOM_PREFIX
+                        llm,
+                        df,  # full dataset
+                        verbose=False,
+                        allow_dangerous_code=False,  # safer
+                        handle_parsing_errors=True,
+                        agent_type="openai-tools",
+                        prefix=CUSTOM_PREFIX
                     )
-    
-                    # Fixed-size scrollable window
-                    chat_container = st.container(height=450)
-                    
+        
+                    chat_container = st.container(height=260)  # reduce height
+        
                     with chat_container:
                         if "messages" not in st.session_state:
                             st.session_state.messages = []
                         for msg in st.session_state.messages:
                             with st.chat_message(msg["role"]):
                                 st.markdown(msg["content"])
-    
-                    if query := st.chat_input("Ask about the data..."):
+        
+                    query = st.chat_input("Ask about the data...")
+                    if query:
                         st.session_state.messages.append({"role": "user", "content": query})
                         with chat_container:
                             with st.chat_message("user"):
                                 st.markdown(query)
-    
+        
                         with chat_container:
                             with st.chat_message("assistant"):
                                 with st.spinner("AI is thinking..."):
                                     try:
-                                        # OpenAI Agent response is usually a direct string in 'output'
                                         context = f"""
-                                        UI filters currently selected:
-                                        - Year: {sel_year}
-                                        - Month: {sel_month}
-                                        - Department: {sel_dept}
-                                        - Manager: {sel_manager}
-                                        
-                                        Instructions:
-                                        - If the user asks "this month" or similar, interpret it as the UI-selected month/year.
-                                        - If the user asks comparisons (e.g., last quarter, YoY, trend), use the full dataset across months/years.
-                                        - Always state what period you used in the answer.
-                                        """
-                                        
+        UI filters currently selected:
+        - Year: {sel_year}
+        - Month: {sel_month}
+        - Department: {sel_dept}
+        - Manager: {sel_manager}
+        
+        Instructions:
+        - If the user asks "this month", interpret it as the UI-selected Year/Month.
+        - For comparisons (last quarter, last 6 months, YoY), use full dataset across months/years.
+        - Always make the period used explicit.
+        """
+        
                                         result = agent.invoke({"input": context + "\n\nUser question: " + query})
-                                        response = result.get("output", "")
+                                        response = (result.get("output") or "").strip()
+        
+                                        # Try JSON chart mode
                                         try:
-                                                chart_spec = json.loads(response)
-                                                if chart_spec.get("chart_required"):
-                                                    # Generate chart
-                                                    chart_type = chart_spec["chart_type"]
-                                                    x = chart_spec["x"]
-                                                    y = chart_spec["y"]
-                                                    group_by = chart_spec.get("group_by")
-                                            
-                                                    chart_df = df.copy()  # or df_filtered depending on time_filter
-                                            
-                                                    if chart_type == "line":
-                                                        fig = px.line(chart_df, x=x, y=y, color=group_by)
-                                                    elif chart_type == "bar":
-                                                        fig = px.bar(chart_df, x=x, y=y, color=group_by)
-                                                    elif chart_type == "pie":
-                                                        fig = px.pie(chart_df, names=x, values=y)
-                                            
-                                                    st.plotly_chart(fig, use_container_width=True)
-                                                    st.markdown(chart_spec["summary"])
-                                            
+                                            chart_spec = json.loads(response)
+                                            if chart_spec.get("chart_required"):
+                                                tf = (chart_spec.get("time_filter") or "all").strip().lower()
+                                                chart_df = apply_time_filter(df, tf, sel_year, sel_month)
+        
+                                                # Optional: also apply dept/manager filters if user already selected them
+                                                if sel_dept != "All Departments":
+                                                    chart_df = chart_df[chart_df["Department"] == sel_dept]
+                                                if sel_manager != "All Managers":
+                                                    chart_df = chart_df[chart_df["Reporting Manager"] == sel_manager]
+        
+                                                fig = build_chart(chart_df, chart_spec)
+                                                st.plotly_chart(fig, use_container_width=True)
+                                                st.markdown(chart_spec.get("summary", ""))
+        
+                                                # Store a friendly assistant message (not raw JSON)
+                                                st.session_state.messages.append({
+                                                    "role": "assistant",
+                                                    "content": chart_spec.get("summary", "Chart generated.")
+                                                })
+                                            else:
+                                                # If JSON but chart not required, show it as text (rare)
+                                                st.markdown(response)
+                                                st.session_state.messages.append({"role": "assistant", "content": response})
+        
                                         except json.JSONDecodeError:
-                                                # Normal text response
-                                                st.markdown(response)                                           
-    
-                                        clean_text = result.get("output", "No response generated.")
-                                        st.markdown(clean_text)
-                                        st.session_state.messages.append({"role": "assistant", "content": clean_text})
+                                            # Normal text response
+                                            st.markdown(response)
+                                            st.session_state.messages.append({"role": "assistant", "content": response})
+        
                                     except Exception as e:
                                         st.error(f"Error: {e}")
+        
                 except Exception as init_err:
                     st.error(f"AI Setup Error: {init_err}")
             else:
-                st.warning("Enter OpenAI API Key to begin.")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+                st.warning("OpenAI API key not configured.")
