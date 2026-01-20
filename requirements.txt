@@ -5,3 +5,4 @@ langchain
 langchain-experimental
 langchain-google-genai
 openpyxl
+tabulate
