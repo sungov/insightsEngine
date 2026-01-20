@@ -270,7 +270,7 @@ if uploaded_file:
                                                     st.plotly_chart(fig, use_container_width=True)
                                                     st.markdown(chart_spec["summary"])
                                             
-                                            except json.JSONDecodeError:
+                                        except json.JSONDecodeError:
                                                 # Normal text response
                                                 st.markdown(response)                                           
     
@@ -283,6 +283,7 @@ if uploaded_file:
                     st.error(f"AI Setup Error: {init_err}")
             else:
                 st.warning("Enter OpenAI API Key to begin.")
+
 
 
 
