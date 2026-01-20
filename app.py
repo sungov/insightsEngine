@@ -182,64 +182,65 @@ if uploaded_file:
         st.divider()
         #st.subheader("🤖 AI Chat Bot")
         with st.expander("🤖 AI ChatBot (Ask questions about the data)", expanded=False):
-        if api_key:
-            try:
-                # Initialize OpenAI LLM                
-                llm = ChatOpenAI(model="gpt-4.1-mini", openai_api_key=api_key, temperature=0)
-
-
-                CUSTOM_PREFIX = "You are a Senior Manager at tsworks. Provide professional summaries. No code. No 'df' mentions. Markdown only."
-                
-                agent = create_pandas_dataframe_agent(
-                    llm, df, verbose=False, allow_dangerous_code=True,
-                    handle_parsing_errors=True, agent_type="openai-tools", prefix=CUSTOM_PREFIX
-                )
-
-                # Fixed-size scrollable window
-                chat_container = st.container(height=450)
-                
-                with chat_container:
-                    if "messages" not in st.session_state:
-                        st.session_state.messages = []
-                    for msg in st.session_state.messages:
-                        with st.chat_message(msg["role"]):
-                            st.markdown(msg["content"])
-
-                if query := st.chat_input("Ask about the data..."):
-                    st.session_state.messages.append({"role": "user", "content": query})
+            if api_key:
+                try:
+                    # Initialize OpenAI LLM                
+                    llm = ChatOpenAI(model="gpt-4.1-mini", openai_api_key=api_key, temperature=0)
+    
+    
+                    CUSTOM_PREFIX = "You are a Senior Manager at tsworks. Provide professional summaries. No code. No 'df' mentions. Markdown only."
+                    
+                    agent = create_pandas_dataframe_agent(
+                        llm, df, verbose=False, allow_dangerous_code=True,
+                        handle_parsing_errors=True, agent_type="openai-tools", prefix=CUSTOM_PREFIX
+                    )
+    
+                    # Fixed-size scrollable window
+                    chat_container = st.container(height=450)
+                    
                     with chat_container:
-                        with st.chat_message("user"):
-                            st.markdown(query)
+                        if "messages" not in st.session_state:
+                            st.session_state.messages = []
+                        for msg in st.session_state.messages:
+                            with st.chat_message(msg["role"]):
+                                st.markdown(msg["content"])
+    
+                    if query := st.chat_input("Ask about the data..."):
+                        st.session_state.messages.append({"role": "user", "content": query})
+                        with chat_container:
+                            with st.chat_message("user"):
+                                st.markdown(query)
+    
+                        with chat_container:
+                            with st.chat_message("assistant"):
+                                with st.spinner("AI is thinking..."):
+                                    try:
+                                        # OpenAI Agent response is usually a direct string in 'output'
+                                        context = f"""
+                                        UI filters currently selected:
+                                        - Year: {sel_year}
+                                        - Month: {sel_month}
+                                        - Department: {sel_dept}
+                                        - Manager: {sel_manager}
+                                        
+                                        Instructions:
+                                        - If the user asks "this month" or similar, interpret it as the UI-selected month/year.
+                                        - If the user asks comparisons (e.g., last quarter, YoY, trend), use the full dataset across months/years.
+                                        - Always state what period you used in the answer.
+                                        """
+                                        
+                                        result = agent.invoke({"input": context + "\n\nUser question: " + query})
+    
+                                        clean_text = result.get("output", "No response generated.")
+                                        st.markdown(clean_text)
+                                        st.session_state.messages.append({"role": "assistant", "content": clean_text})
+                                    except Exception as e:
+                                        st.error(f"Error: {e}")
+                except Exception as init_err:
+                    st.error(f"AI Setup Error: {init_err}")
+            else:
+                st.warning("Enter OpenAI API Key to begin.")
 
-                    with chat_container:
-                        with st.chat_message("assistant"):
-                            with st.spinner("AI is thinking..."):
-                                try:
-                                    # OpenAI Agent response is usually a direct string in 'output'
-                                    context = f"""
-                                    UI filters currently selected:
-                                    - Year: {sel_year}
-                                    - Month: {sel_month}
-                                    - Department: {sel_dept}
-                                    - Manager: {sel_manager}
-                                    
-                                    Instructions:
-                                    - If the user asks "this month" or similar, interpret it as the UI-selected month/year.
-                                    - If the user asks comparisons (e.g., last quarter, YoY, trend), use the full dataset across months/years.
-                                    - Always state what period you used in the answer.
-                                    """
-                                    
-                                    result = agent.invoke({"input": context + "\n\nUser question: " + query})
-
-                                    clean_text = result.get("output", "No response generated.")
-                                    st.markdown(clean_text)
-                                    st.session_state.messages.append({"role": "assistant", "content": clean_text})
-                                except Exception as e:
-                                    st.error(f"Error: {e}")
-            except Exception as init_err:
-                st.error(f"AI Setup Error: {init_err}")
-        else:
-            st.warning("Enter OpenAI API Key to begin.")
 
 
 
