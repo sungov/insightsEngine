@@ -36,7 +36,9 @@ if uploaded_file:
         df = pd.read_csv(uploaded_file)
     else:
         df = pd.read_excel(uploaded_file)
-
+    
+    # Clean leading/trailing spaces from column names
+    df.columns = df.columns.str.strip()
     df = df.fillna("N/A")
     df['Sat_Score'] = df['How satisfied are you working at tsworks?'].map(SAT_MAP).fillna(5)
     df['Mood_Score'] = df['How are you feeling overall this month?'].map(MOOD_MAP).fillna(3)
@@ -83,7 +85,13 @@ if uploaded_file:
             c2.plotly_chart(fig_mood, use_container_width=True)
 
         with tab2:
-            st.dataframe(df_filtered[['Name', 'Department', 'Reporting Manager', 'Key Accomplishments this Month', 'What’s not going well?']])
+            st.dataframe(df_filtered[[
+                'Name', 
+                'Department', 
+                'Reporting Manager', 
+                'Key Accomplishments this Month', 
+                'What’s not going well or causing disappointment?'
+            ]])
 
         # --- AI AGENT SECTION ---
         st.divider()
@@ -132,3 +140,4 @@ if uploaded_file:
                 st.error(f"AI Setup Error: {init_err}")
         else:
             st.warning("Enter OpenAI API Key to begin.")
+
