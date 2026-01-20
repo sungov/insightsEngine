@@ -8,17 +8,10 @@ from langchain_google_genai import ChatGoogleGenerativeAI, HarmCategory, HarmBlo
 st.set_page_config(page_title="tsworks | Insights Engine", layout="wide")
 
 # --- SATISFACTION MAPPING ---
-# Converts text responses into numbers for NPS calculation
 SAT_MAP = {
-    "Extremely satisfied": 10,
-    "Satisfied": 8,
-    "Somewhat satisfied": 7,
-    "Neutral": 5,
-    "Somewhat dissatisfied": 3,
-    "Dissatisfied": 2,
-    "Extremely dissatisfied": 0
+    "Extremely satisfied": 10, "Satisfied": 8, "Somewhat satisfied": 7,
+    "Neutral": 5, "Somewhat dissatisfied": 3, "Dissatisfied": 2, "Extremely dissatisfied": 0
 }
-
 MOOD_MAP = {"Great": 5, "Good": 4, "Neutral": 3, "Challenged": 2, "Burned Out": 1}
 
 # --- HEADER ---
@@ -32,6 +25,11 @@ with st.sidebar:
     uploaded_file = st.file_uploader("Upload 'tsworks Employee Pulse' Excel", type=["xlsx", "csv"])
 
 if uploaded_file:
+    # --- 1. SESSION STATE MANAGEMENT (Reset chat on new file) ---
+    if "last_file_name" not in st.session_state or st.session_state.last_file_name != uploaded_file.name:
+        st.session_state.messages = []  # Clear chat history
+        st.session_state.last_file_name = uploaded_file.name  # Update tracker
+
     # Load Data
     if uploaded_file.name.endswith('.csv'):
         df = pd.read_csv(uploaded_file)
@@ -39,11 +37,10 @@ if uploaded_file:
         df = pd.read_excel(uploaded_file)
 
     df = df.fillna("N/A")
-    # 1. Apply Mapping for Analytics
     df['Sat_Score'] = df['How satisfied are you working at tsworks?'].map(SAT_MAP).fillna(5)
     df['Mood_Score'] = df['How are you feeling overall this month?'].map(MOOD_MAP).fillna(3)
 
-    # 2. Sidebar Filters (Hierarchical)
+    # 2. Sidebar Filters
     depts = sorted(df['Department'].dropna().unique())
     sel_dept = st.sidebar.selectbox("Filter by Department", ["All Departments"] + list(depts))
 
@@ -66,7 +63,6 @@ if uploaded_file:
         nps = round(((promoters - detractors) / total) * 100)
         avg_sat = round(df_filtered['Sat_Score'].mean(), 1)
 
-        # --- METRICS BAR ---
         m1, m2, m3 = st.columns(3)
         m1.metric("Employee NPS", f"{nps}")
         m2.metric("Avg Satisfaction", f"{avg_sat} / 10")
@@ -74,11 +70,8 @@ if uploaded_file:
 
         # --- VISUALS ---
         tab1, tab2 = st.tabs(["📈 Sentiment Analysis", "📋 Textual Insights"])
-
         with tab1:
             c1, c2 = st.columns(2)
-            
-            # Chart 1: Satisfaction by Dept or Manager
             group_by = 'Reporting Manager' if sel_dept != "All Departments" else 'Department'
             fig_sat = px.bar(
                 df_filtered.groupby(group_by)['Sat_Score'].mean().reset_index(),
@@ -88,7 +81,6 @@ if uploaded_file:
             )
             c1.plotly_chart(fig_sat, use_container_width=True)
 
-            # Chart 2: Mood Distribution
             fig_mood = px.pie(
                 df_filtered, names='How are you feeling overall this month?',
                 title="Current Team Mood", hole=0.4
@@ -97,19 +89,16 @@ if uploaded_file:
 
         with tab2:
             st.write("### Raw Responses for Selected Group")
-            st.dataframe(df_filtered[[
-                'Name', 'Department', 'Reporting Manager', 
-                'Key Accomplishments this Month', 'What’s not going well or causing disappointment?'
-            ]])
+            st.dataframe(df_filtered[['Name', 'Department', 'Reporting Manager', 'Key Accomplishments this Month', 'What’s not going well or causing disappointment?']])
 
-        # --- AI AGENT ---
+        # --- AI AGENT SECTION ---
         st.divider()
         st.subheader("🤖 AI Data Architect")
+        
         if api_key:
             try:
-                # Use a 2026 stable model like gemini-2.0-flash or gemini-2.5-flash
                 llm = ChatGoogleGenerativeAI(
-                    model="gemini-2.5-flash", # Updated model name
+                    model="gemini-2.0-flash", 
                     google_api_key=api_key,
                     temperature=0,
                     safety_settings={
@@ -120,55 +109,49 @@ if uploaded_file:
                     }
                 )
 
-                # Define a professional prompt for tsworks
-                CUSTOM_PREFIX = """
-                You are a Senior Manager at tsworks. Your job is to analyze employee pulse data and provide human-readable, professional summaries.
-                INSTRUCTIONS:
-                - Do not mention the dataframe name 'df'.
-                - Do not show any Python code or logic in your final answer.
-                - If you are calculating a number (like NPS or average), explain what it means in one sentence.
-                - Always respond in plain text or Markdown bullet points.
-                - If the user asks for a summary, use a tone that is helpful for a Manager to read.
-                """
+                CUSTOM_PREFIX = """You are a Senior Manager at tsworks. Provide professional summaries. No code. No 'df' mentions. Markdown only."""
                 
-                # Update your agent initialization
                 agent = create_pandas_dataframe_agent(
-                    llm, 
-                    df_filtered, 
-                    verbose=False, # Keeps the backend clean
-                    allow_dangerous_code=True,
-                    handle_parsing_errors=True,
-                    agent_type="tool-calling",
-                    prefix=CUSTOM_PREFIX # Injects your new rules
+                    llm, df_filtered, verbose=False, allow_dangerous_code=True,
+                    handle_parsing_errors=True, agent_type="tool-calling", prefix=CUSTOM_PREFIX
                 )
-        
-               
-                if "messages" not in st.session_state:
-                    st.session_state.messages = []
 
-                for message in st.session_state.messages:
-                    with st.chat_message(message["role"]):
-                        st.markdown(message["content"])
+                # 2. FIXED SIZE SCROLLABLE CHAT WINDOW
+                chat_container = st.container(height=450)
+                
+                with chat_container:
+                    if "messages" not in st.session_state:
+                        st.session_state.messages = []
+                    
+                    for message in st.session_state.messages:
+                        with st.chat_message(message["role"]):
+                            st.markdown(message["content"])
 
+                # Chat input remains at the bottom
                 if query := st.chat_input("Ask about the data..."):
                     st.session_state.messages.append({"role": "user", "content": query})
-                    with st.chat_message("user"):
-                        st.markdown(query)
-                
-                    with st.chat_message("assistant"):
-                        with st.spinner("AI is analysing..."):
-                            try:
-                                # Use .invoke() instead of .run()
-                                result = agent.invoke({"input": query})
-                                
-                                # The 'output' key contains the clean string answer
-                                clean_answer = result.get("output", "I couldn't generate a clear answer.")
-                                clean_text = clean_answer[0]['text']
-                                
-                                st.markdown(clean_text)
-                                st.session_state.messages.append({"role": "assistant", "content": clean_text})
-                            except Exception as e:
-                                st.error(f"AI Analysis error: {e}")
+                    # Immediately display user message in container
+                    with chat_container:
+                        with st.chat_message("user"):
+                            st.markdown(query)
+
+                    with chat_container:
+                        with st.chat_message("assistant"):
+                            with st.spinner("AI is analysing..."):
+                                try:
+                                    result = agent.invoke({"input": query})
+                                    clean_answer = result.get("output", "I couldn't generate a clear answer.")
+                                    
+                                    # Safe extraction if response is list/dict
+                                    if isinstance(clean_answer, list) and len(clean_answer) > 0:
+                                        display_text = clean_answer[0].get('text', str(clean_answer))
+                                    else:
+                                        display_text = clean_answer
+                                    
+                                    st.markdown(display_text)
+                                    st.session_state.messages.append({"role": "assistant", "content": display_text})
+                                except Exception as e:
+                                    st.error(f"AI Analysis error: {e}")
             except Exception as init_err:
                 st.error(f"AI Initialization Error: {init_err}")
         else:
@@ -177,9 +160,3 @@ if uploaded_file:
         st.warning("No data available for the selected filters.")
 else:
     st.info("Please upload the Excel/CSV file to begin.")
-
-
-
-
-
-
