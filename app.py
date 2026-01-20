@@ -166,7 +166,7 @@ if uploaded_file:
 
         # --- AI AGENT SECTION ---
         st.divider()
-        st.subheader("🤖 AI Data Architect")
+        st.subheader("🤖 AI Chat Bot")
         
         if api_key:
             try:
@@ -177,7 +177,7 @@ if uploaded_file:
                 CUSTOM_PREFIX = "You are a Senior Manager at tsworks. Provide professional summaries. No code. No 'df' mentions. Markdown only."
                 
                 agent = create_pandas_dataframe_agent(
-                    llm, df_filtered, verbose=False, allow_dangerous_code=True,
+                    llm, df, verbose=False, allow_dangerous_code=True,
                     handle_parsing_errors=True, agent_type="openai-tools", prefix=CUSTOM_PREFIX
                 )
 
@@ -202,7 +202,21 @@ if uploaded_file:
                             with st.spinner("AI is thinking..."):
                                 try:
                                     # OpenAI Agent response is usually a direct string in 'output'
-                                    result = agent.invoke({"input": query})
+                                    context = f"""
+                                    UI filters currently selected:
+                                    - Year: {sel_year}
+                                    - Month: {sel_month}
+                                    - Department: {sel_dept}
+                                    - Manager: {sel_manager}
+                                    
+                                    Instructions:
+                                    - If the user asks "this month" or similar, interpret it as the UI-selected month/year.
+                                    - If the user asks comparisons (e.g., last quarter, YoY, trend), use the full dataset across months/years.
+                                    - Always state what period you used in the answer.
+                                    """
+                                    
+                                    result = agent.invoke({"input": context + "\n\nUser question: " + query})
+
                                     clean_text = result.get("output", "No response generated.")
                                     st.markdown(clean_text)
                                     st.session_state.messages.append({"role": "assistant", "content": clean_text})
@@ -212,6 +226,7 @@ if uploaded_file:
                 st.error(f"AI Setup Error: {init_err}")
         else:
             st.warning("Enter OpenAI API Key to begin.")
+
 
 
 
