@@ -4,6 +4,7 @@ import plotly.express as px
 from langchain_experimental.agents import create_pandas_dataframe_agent
 from langchain_openai import ChatOpenAI
 import os
+import json
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="tsworks | Insights Engine", layout="wide")
@@ -188,7 +189,24 @@ if uploaded_file:
                     llm = ChatOpenAI(model="gpt-4.1-mini", openai_api_key=api_key, temperature=0)
     
     
-                    CUSTOM_PREFIX = "You are a Senior Manager at tsworks. Provide professional summaries. No code. No 'df' mentions. Markdown only."
+                    CUSTOM_PREFIX = """You are a Senior Manager at tsworks.
+                        You can:
+                        - Answer questions in text
+                        - Request charts when visualization adds value
+                        
+                        If a chart is useful, respond in this EXACT JSON format (and nothing else):
+                        
+                        {
+                          "chart_required": true,
+                          "chart_type": "line | bar | pie",
+                          "x": "<column name>",
+                          "y": "<column name or aggregation>",
+                          "group_by": "<optional column>",
+                          "time_filter": "this_month | last_6_months | last_quarter | all",
+                          "summary": "<short executive insight>"
+                        }
+                        
+                        If no chart is needed, respond normally in Markdown."""
                     
                     agent = create_pandas_dataframe_agent(
                         llm, df, verbose=False, allow_dangerous_code=True,
@@ -230,6 +248,32 @@ if uploaded_file:
                                         """
                                         
                                         result = agent.invoke({"input": context + "\n\nUser question: " + query})
+                                        response = result.get("output", "")
+
+                                            try:
+                                                chart_spec = json.loads(response)
+                                                if chart_spec.get("chart_required"):
+                                                    # Generate chart
+                                                    chart_type = chart_spec["chart_type"]
+                                                    x = chart_spec["x"]
+                                                    y = chart_spec["y"]
+                                                    group_by = chart_spec.get("group_by")
+                                            
+                                                    chart_df = df.copy()  # or df_filtered depending on time_filter
+                                            
+                                                    if chart_type == "line":
+                                                        fig = px.line(chart_df, x=x, y=y, color=group_by)
+                                                    elif chart_type == "bar":
+                                                        fig = px.bar(chart_df, x=x, y=y, color=group_by)
+                                                    elif chart_type == "pie":
+                                                        fig = px.pie(chart_df, names=x, values=y)
+                                            
+                                                    st.plotly_chart(fig, use_container_width=True)
+                                                    st.markdown(chart_spec["summary"])
+                                            
+                                            except json.JSONDecodeError:
+                                                # Normal text response
+                                                st.markdown(response)
     
                                         clean_text = result.get("output", "No response generated.")
                                         st.markdown(clean_text)
@@ -240,6 +284,7 @@ if uploaded_file:
                     st.error(f"AI Setup Error: {init_err}")
             else:
                 st.warning("Enter OpenAI API Key to begin.")
+
 
 
 
