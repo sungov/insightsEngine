@@ -1,7 +1,7 @@
-langchain-google-genai>=2.0.0
-langchain-experimental
 streamlit
 pandas
 plotly
+langchain
+langchain-experimental
+langchain-openai
 openpyxl
-tabulate
