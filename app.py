@@ -160,8 +160,18 @@ if uploaded_file:
                 'Name', 
                 'Department', 
                 'Reporting Manager', 
+                'How are you feeling overall this month?',                
                 'Key Accomplishments this Month', 
-                'What’s not going well or causing disappointment?'
+                'What’s not going well or causing disappointment?',
+                'Any concerns, blockers, or risks?',
+                'Do you need support from bench resources or other teams?',
+                'How is your work-life balance?',
+                'How is your current workload?',
+                'Are you currently supporting or mentoring junior team members?',
+                'Suggestions for process or workflow improvements',
+                'Planned PTO this month and coverage plan',
+                'Goal Progress'
+                
             ]])
 
         # --- AI AGENT SECTION ---
@@ -226,6 +236,7 @@ if uploaded_file:
                 st.error(f"AI Setup Error: {init_err}")
         else:
             st.warning("Enter OpenAI API Key to begin.")
+
 
 
 
