@@ -121,15 +121,13 @@ if uploaded_file:
 
                 # Define a professional prompt for tsworks
                 CUSTOM_PREFIX = """
-                You are a Senior Data Analyst at tsworks. Your goal is to provide high-level, 
-                executive-style insights from employee pulse data.
-                
-                RULES:
-                1. Be concise. Do not explain your Python code unless asked.
-                2. Use professional language.
-                3. Always format your response using Markdown (bolding, lists, or tables).
-                4. If asked for a summary, provide 3 bullet points: Key Wins, Risks, and Recommendations.
-                5. If you cannot find data, politely state that the specific metric is unavailable for the selected filters.
+                You are a Senior Manager at tsworks. Your job is to analyze employee pulse data and provide human-readable, professional summaries.
+                INSTRUCTIONS:
+                - Do not mention the dataframe name 'df'.
+                - Do not show any Python code or logic in your final answer.
+                - If you are calculating a number (like NPS or average), explain what it means in one sentence.
+                - Always respond in plain text or Markdown bullet points.
+                - If the user asks for a summary, use a tone that is helpful for a Manager to read.
                 """
                 
                 # Update your agent initialization
@@ -155,13 +153,18 @@ if uploaded_file:
                     st.session_state.messages.append({"role": "user", "content": query})
                     with st.chat_message("user"):
                         st.markdown(query)
-
+                
                     with st.chat_message("assistant"):
                         with st.spinner("AI is calculating..."):
                             try:
-                                response = agent.run(query)
-                                st.markdown(response)
-                                st.session_state.messages.append({"role": "assistant", "content": response})
+                                # Use .invoke() instead of .run()
+                                result = agent.invoke({"input": query})
+                                
+                                # The 'output' key contains the clean string answer
+                                clean_answer = result.get("output", "I couldn't generate a clear answer.")
+                                
+                                st.markdown(clean_answer)
+                                st.session_state.messages.append({"role": "assistant", "content": clean_answer})
                             except Exception as e:
                                 st.error(f"AI Analysis error: {e}")
             except Exception as init_err:
@@ -172,5 +175,6 @@ if uploaded_file:
         st.warning("No data available for the selected filters.")
 else:
     st.info("Please upload the Excel/CSV file to begin.")
+
 
 
