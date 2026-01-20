@@ -30,9 +30,12 @@ if uploaded_file:
     if "current_file" not in st.session_state or st.session_state.current_file != uploaded_file.name:
         st.session_state.messages = []
         st.session_state.current_file = uploaded_file.name
-        st.session_state.default_period_set = False
-        st.session_state.sel_year = None
-        st.session_state.sel_month = None
+    
+        # IMPORTANT: remove widget values so selectboxes can re-initialize cleanly
+        st.session_state.pop("sel_year", None)
+        st.session_state.pop("sel_month", None)
+        st.session_state["default_period_set"] = False
+
 
 
     # Load and Clean Data
@@ -48,58 +51,64 @@ if uploaded_file:
     df['Mood_Score'] = df['How are you feeling overall this month?'].map(MOOD_MAP).fillna(3)
 
     # Sidebar Filters
-        # --- NORMALIZE MONTH/YEAR COLUMNS ---
+        # --- NORMALIZE MONTH/YEAR COLUMNS ---       
     df["Year"] = pd.to_numeric(df["Year"], errors="coerce")
     df["Month"] = df["Month"].astype(str).str.strip().str[:3].str.title()
-
-    # Month order map for sorting
+    
     MONTH_ORDER = {"Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
                    "Jul": 7, "Aug": 8, "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12}
-
+    
     df["_MonthNum"] = df["Month"].map(MONTH_ORDER)
     df["_PeriodKey"] = df["Year"] * 100 + df["_MonthNum"]
-
-    # Find latest available period in file
+    
+    # Latest available period in the whole file
     latest_key = df["_PeriodKey"].dropna().max()
-    latest_year = int(df.loc[df["_PeriodKey"] == latest_key, "Year"].iloc[0])
-    latest_month = df.loc[df["_PeriodKey"] == latest_key, "Month"].iloc[0]
-
-    # --- SIDEBAR FILTERS (Default = Latest Month) ---
+    latest_row = df.loc[df["_PeriodKey"] == latest_key].iloc[0]
+    latest_year = int(latest_row["Year"])
+    latest_month = latest_row["Month"]
+    
     years = sorted(df["Year"].dropna().unique().astype(int).tolist())
-
-    # When a new file loads, set default to latest. Keep user selection on reruns.
-    if "default_period_set" not in st.session_state or st.session_state.current_file != uploaded_file.name:
-        st.session_state.sel_year = latest_year
-        st.session_state.sel_month = latest_month
-        st.session_state.default_period_set = True
-
+    
+    # ✅ Set defaults when:
+    # - first run / refresh (keys missing)
+    # - or defaults not set yet
+    # - or current values are invalid
+    if (not st.session_state.get("default_period_set", False)
+        or st.session_state.get("sel_year") not in years):
+        st.session_state["sel_year"] = latest_year
+        st.session_state["default_period_set"] = True
+    
     sel_year = st.sidebar.selectbox(
         "Filter by Year",
         options=years,
-        index=years.index(st.session_state.sel_year) if st.session_state.sel_year in years else years.index(latest_year),
+        index=years.index(st.session_state["sel_year"]),
         key="sel_year"
     )
-
-    # Month list depends on selected year
+    
+    # Month options for selected year
     df_year = df[df["Year"] == sel_year]
-    months = [m for m in ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"] if m in set(df_year["Month"].dropna())]
-
-    # If current selected month isn’t available for that year, fallback to latest month in that year
-    if st.session_state.sel_month not in months:
+    months = [m for m in ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+              if m in set(df_year["Month"].dropna())]
+    
+    # ✅ Month default / validity
+    if st.session_state.get("sel_month") not in months:
+        # pick latest month within that year (by month number)
         if len(months) > 0:
-            st.session_state.sel_month = months[-1]  # last in calendar order among available
+            # choose max based on order
+            st.session_state["sel_month"] = max(months, key=lambda m: MONTH_ORDER[m])
         else:
-            st.session_state.sel_month = latest_month  # safe fallback
-
+            st.session_state["sel_month"] = latest_month  # fallback
+    
     sel_month = st.sidebar.selectbox(
         "Filter by Month",
         options=months,
-        index=months.index(st.session_state.sel_month) if st.session_state.sel_month in months else 0,
+        index=months.index(st.session_state["sel_month"]) if months else 0,
         key="sel_month"
     )
-
-    # Apply Year + Month filters (always selected, not "All")
+    
+    # Apply Year + Month filter
     df_filtered = df[(df["Year"] == sel_year) & (df["Month"] == sel_month)].copy()
+
 
     # Department filter (after time filters)
     depts = sorted(df_filtered["Department"].dropna().unique())
@@ -117,7 +126,7 @@ if uploaded_file:
 
 
     # --- KPI CALCULATIONS ---
-    st.caption(f"Showing data for: **{sel_month} {sel_year}**")
+    st.caption(f"Showing data for: **{st.session_state.get('sel_month', 'N/A')} {st.session_state.get('sel_year', 'N/A')}**")
     total = len(df_filtered)
     if total > 0:
         promoters = len(df_filtered[df_filtered['Sat_Score'] >= 9])
@@ -203,6 +212,7 @@ if uploaded_file:
                 st.error(f"AI Setup Error: {init_err}")
         else:
             st.warning("Enter OpenAI API Key to begin.")
+
 
 
 
