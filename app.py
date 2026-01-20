@@ -155,7 +155,7 @@ if uploaded_file:
                         st.markdown(query)
                 
                     with st.chat_message("assistant"):
-                        with st.spinner("AI is calculating..."):
+                        with st.spinner("AI is analysing..."):
                             try:
                                 # Use .invoke() instead of .run()
                                 result = agent.invoke({"input": query})
@@ -175,6 +175,7 @@ if uploaded_file:
         st.warning("No data available for the selected filters.")
 else:
     st.info("Please upload the Excel/CSV file to begin.")
+
 
 
 
