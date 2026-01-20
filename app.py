@@ -98,7 +98,7 @@ if uploaded_file:
         if api_key:
             try:
                 llm = ChatGoogleGenerativeAI(
-                    model="gemini-2.0-flash", 
+                    model="gemini-2.5-flash", 
                     google_api_key=api_key,
                     temperature=0,
                     safety_settings={
@@ -160,3 +160,4 @@ if uploaded_file:
         st.warning("No data available for the selected filters.")
 else:
     st.info("Please upload the Excel/CSV file to begin.")
+
