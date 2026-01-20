@@ -5,6 +5,22 @@ from langchain_experimental.agents import create_pandas_dataframe_agent
 from langchain_openai import ChatOpenAI
 import os
 import json
+import re
+
+def extract_json_object(text: str):
+    """
+    Extract the first JSON object found in a string.
+    Returns dict or None.
+    """
+    if not text:
+        return None
+    match = re.search(r"\{[\s\S]*\}", text)  # greedy: first { to last }
+    if not match:
+        return None
+    try:
+        return json.loads(match.group(0))
+    except Exception:
+        return None
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="tsworks | Insights Engine", layout="wide")
@@ -351,6 +367,7 @@ if uploaded_file:
         - For trends over time, use x="Month" and y="Sat_Score_mean" or "Mood_Score_mean" (or "count").
         - If the question asks "this month", use time_filter="this_month" (UI-selected).
         - Keep it professional.
+        - If chart_required is true, output ONLY JSON. Do not include any explanatory text before or after.
         """
         
                     agent = create_pandas_dataframe_agent(
@@ -400,34 +417,26 @@ if uploaded_file:
                                         response = (result.get("output") or "").strip()
         
                                         # Try JSON chart mode
-                                        try:
-                                            chart_spec = json.loads(response)
-                                            if chart_spec.get("chart_required"):
-                                                tf = (chart_spec.get("time_filter") or "all").strip().lower()
-                                                chart_df = apply_time_filter(df, tf, sel_year, sel_month)
-        
-                                                # Optional: also apply dept/manager filters if user already selected them
-                                                if sel_dept != "All Departments":
-                                                    chart_df = chart_df[chart_df["Department"] == sel_dept]
-                                                if sel_manager != "All Managers":
-                                                    chart_df = chart_df[chart_df["Reporting Manager"] == sel_manager]
-        
-                                                fig = build_chart(chart_df, chart_spec)
-                                                st.plotly_chart(fig, use_container_width=True)
-                                                st.markdown(chart_spec.get("summary", ""))
-        
-                                                # Store a friendly assistant message (not raw JSON)
-                                                st.session_state.messages.append({
-                                                    "role": "assistant",
-                                                    "content": chart_spec.get("summary", "Chart generated.")
-                                                })
-                                            else:
-                                                # If JSON but chart not required, show it as text (rare)
-                                                st.markdown(response)
-                                                st.session_state.messages.append({"role": "assistant", "content": response})
-        
-                                        except json.JSONDecodeError:
-                                            # Normal text response
+                                        chart_spec = extract_json_object(response)
+                                        if chart_spec and chart_spec.get("chart_required"):
+                                            tf = (chart_spec.get("time_filter") or "all").strip().lower()
+                                            chart_df = apply_time_filter(df, tf, sel_year, sel_month)
+                                        
+                                            # optional: respect UI dept/manager filters
+                                            if sel_dept != "All Departments":
+                                                chart_df = chart_df[chart_df["Department"] == sel_dept]
+                                            if sel_manager != "All Managers":
+                                                chart_df = chart_df[chart_df["Reporting Manager"] == sel_manager]
+                                        
+                                            fig = build_chart(chart_df, chart_spec)
+                                            st.plotly_chart(fig, use_container_width=True)
+                                            st.markdown(chart_spec.get("summary", ""))
+                                        
+                                            st.session_state.messages.append({
+                                                "role": "assistant",
+                                                "content": chart_spec.get("summary", "Chart generated.")
+                                            })
+                                        else:
                                             st.markdown(response)
                                             st.session_state.messages.append({"role": "assistant", "content": response})
         
@@ -438,4 +447,5 @@ if uploaded_file:
                     st.error(f"AI Setup Error: {init_err}")
             else:
                 st.warning("OpenAI API key not configured.")
+
 
