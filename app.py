@@ -99,8 +99,9 @@ if uploaded_file:
         
         if api_key:
             try:
-                # Initialize OpenAI LLM
-                llm = ChatOpenAI(model="gpt-4o", openai_api_key=api_key, temperature=0)
+                # Initialize OpenAI LLM                
+                llm = ChatOpenAI(model="gpt-4.1-mini", openai_api_key=api_key, temperature=0)
+
 
                 CUSTOM_PREFIX = "You are a Senior Manager at tsworks. Provide professional summaries. No code. No 'df' mentions. Markdown only."
                 
@@ -140,4 +141,5 @@ if uploaded_file:
                 st.error(f"AI Setup Error: {init_err}")
         else:
             st.warning("Enter OpenAI API Key to begin.")
+
 
