@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 from langchain_experimental.agents import create_pandas_dataframe_agent
-from langchain_google_genai import ChatGoogleGenerativeAI, HarmCategory, HarmBlockThreshold
+from langchain_openai import ChatOpenAI
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="tsworks | Insights Engine", layout="wide")
@@ -16,21 +16,22 @@ MOOD_MAP = {"Great": 5, "Good": 4, "Neutral": 3, "Challenged": 2, "Burned Out": 
 
 # --- HEADER ---
 st.title("📊 tsworks Insights Engine")
-st.caption("Custom Analytics for tsworks Employee Pulse Surveys")
+st.caption("Custom Analytics powered by OpenAI ChatGPT")
 
 # --- SIDEBAR ---
 with st.sidebar:
     st.header("Setup")
-    api_key = st.text_input("Enter Gemini API Key", type="password")
+    # Switch to OpenAI Key input
+    api_key = st.text_input("Enter OpenAI API Key", type="password")
     uploaded_file = st.file_uploader("Upload 'tsworks Employee Pulse' Excel", type=["xlsx", "csv"])
 
 if uploaded_file:
-    # --- 1. SESSION STATE MANAGEMENT (Reset chat on new file) ---
-    if "last_file_name" not in st.session_state or st.session_state.last_file_name != uploaded_file.name:
-        st.session_state.messages = []  # Clear chat history
-        st.session_state.last_file_name = uploaded_file.name  # Update tracker
+    # Logic to clear chat history when a NEW file is uploaded
+    if "current_file" not in st.session_state or st.session_state.current_file != uploaded_file.name:
+        st.session_state.messages = []
+        st.session_state.current_file = uploaded_file.name
 
-    # Load Data
+    # Load and Clean Data
     if uploaded_file.name.endswith('.csv'):
         df = pd.read_csv(uploaded_file)
     else:
@@ -40,18 +41,15 @@ if uploaded_file:
     df['Sat_Score'] = df['How satisfied are you working at tsworks?'].map(SAT_MAP).fillna(5)
     df['Mood_Score'] = df['How are you feeling overall this month?'].map(MOOD_MAP).fillna(3)
 
-    # 2. Sidebar Filters
+    # Sidebar Filters
     depts = sorted(df['Department'].dropna().unique())
     sel_dept = st.sidebar.selectbox("Filter by Department", ["All Departments"] + list(depts))
 
-    if sel_dept != "All Departments":
-        df_filtered = df[df['Department'] == sel_dept]
-        managers = sorted(df_filtered['Reporting Manager'].dropna().unique())
-    else:
-        df_filtered = df
-        managers = sorted(df['Reporting Manager'].dropna().unique())
-
+    df_filtered = df[df['Department'] == sel_dept] if sel_dept != "All Departments" else df
+    
+    managers = sorted(df_filtered['Reporting Manager'].dropna().unique())
     sel_manager = st.sidebar.selectbox("Filter by Manager", ["All Managers"] + list(managers))
+    
     if sel_manager != "All Managers":
         df_filtered = df_filtered[df_filtered['Reporting Manager'] == sel_manager]
 
@@ -81,15 +79,11 @@ if uploaded_file:
             )
             c1.plotly_chart(fig_sat, use_container_width=True)
 
-            fig_mood = px.pie(
-                df_filtered, names='How are you feeling overall this month?',
-                title="Current Team Mood", hole=0.4
-            )
+            fig_mood = px.pie(df_filtered, names='How are you feeling overall this month?', title="Current Team Mood", hole=0.4)
             c2.plotly_chart(fig_mood, use_container_width=True)
 
         with tab2:
-            st.write("### Raw Responses for Selected Group")
-            st.dataframe(df_filtered[['Name', 'Department', 'Reporting Manager', 'Key Accomplishments this Month', 'What’s not going well or causing disappointment?']])
+            st.dataframe(df_filtered[['Name', 'Department', 'Reporting Manager', 'Key Accomplishments this Month', 'What’s not going well?']])
 
         # --- AI AGENT SECTION ---
         st.divider()
@@ -97,67 +91,44 @@ if uploaded_file:
         
         if api_key:
             try:
-                llm = ChatGoogleGenerativeAI(
-                    model="gemini-2.5-flash", 
-                    google_api_key=api_key,
-                    temperature=0,
-                    safety_settings={
-                        HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                        HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                        HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-                        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-                    }
-                )
+                # Initialize OpenAI LLM
+                llm = ChatOpenAI(model="gpt-4o", openai_api_key=api_key, temperature=0)
 
-                CUSTOM_PREFIX = """You are a Senior Manager at tsworks. Provide professional summaries. No code. No 'df' mentions. Markdown only."""
+                CUSTOM_PREFIX = "You are a Senior Manager at tsworks. Provide professional summaries. No code. No 'df' mentions. Markdown only."
                 
                 agent = create_pandas_dataframe_agent(
                     llm, df_filtered, verbose=False, allow_dangerous_code=True,
-                    handle_parsing_errors=True, agent_type="tool-calling", prefix=CUSTOM_PREFIX
+                    handle_parsing_errors=True, agent_type="openai-tools", prefix=CUSTOM_PREFIX
                 )
 
-                # 2. FIXED SIZE SCROLLABLE CHAT WINDOW
+                # Fixed-size scrollable window
                 chat_container = st.container(height=450)
                 
                 with chat_container:
                     if "messages" not in st.session_state:
                         st.session_state.messages = []
-                    
-                    for message in st.session_state.messages:
-                        with st.chat_message(message["role"]):
-                            st.markdown(message["content"])
+                    for msg in st.session_state.messages:
+                        with st.chat_message(msg["role"]):
+                            st.markdown(msg["content"])
 
-                # Chat input remains at the bottom
                 if query := st.chat_input("Ask about the data..."):
                     st.session_state.messages.append({"role": "user", "content": query})
-                    # Immediately display user message in container
                     with chat_container:
                         with st.chat_message("user"):
                             st.markdown(query)
 
                     with chat_container:
                         with st.chat_message("assistant"):
-                            with st.spinner("AI is analysing..."):
+                            with st.spinner("AI is thinking..."):
                                 try:
+                                    # OpenAI Agent response is usually a direct string in 'output'
                                     result = agent.invoke({"input": query})
-                                    clean_answer = result.get("output", "I couldn't generate a clear answer.")
-                                    
-                                    # Safe extraction if response is list/dict
-                                    if isinstance(clean_answer, list) and len(clean_answer) > 0:
-                                        display_text = clean_answer[0].get('text', str(clean_answer))
-                                    else:
-                                        display_text = clean_answer
-                                    
-                                    st.markdown(display_text)
-                                    st.session_state.messages.append({"role": "assistant", "content": display_text})
+                                    clean_text = result.get("output", "No response generated.")
+                                    st.markdown(clean_text)
+                                    st.session_state.messages.append({"role": "assistant", "content": clean_text})
                                 except Exception as e:
-                                    st.error(f"AI Analysis error: {e}")
+                                    st.error(f"Error: {e}")
             except Exception as init_err:
-                st.error(f"AI Initialization Error: {init_err}")
+                st.error(f"AI Setup Error: {init_err}")
         else:
-            st.warning("Enter API Key to enable natural language chat.")
-    else:
-        st.warning("No data available for the selected filters.")
-else:
-    st.info("Please upload the Excel/CSV file to begin.")
-
+            st.warning("Enter OpenAI API Key to begin.")
