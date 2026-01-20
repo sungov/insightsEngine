@@ -2,13 +2,13 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 from langchain_experimental.agents import create_pandas_dataframe_agent
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_google_genai import ChatGoogleGenerativeAI, HarmCategory, HarmBlockThreshold
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="tsworks | Insights Engine", layout="wide")
 
 # --- SATISFACTION MAPPING ---
-# This converts your text responses into numbers for NPS calculation
+# Converts text responses into numbers for NPS calculation
 SAT_MAP = {
     "Extremely satisfied": 10,
     "Satisfied": 8,
@@ -39,7 +39,6 @@ if uploaded_file:
         df = pd.read_excel(uploaded_file)
     
     # 1. Apply Mapping for Analytics
-    # Use exact column names from your file
     df['Sat_Score'] = df['How satisfied are you working at tsworks?'].map(SAT_MAP).fillna(5)
     df['Mood_Score'] = df['How are you feeling overall this month?'].map(MOOD_MAP).fillna(3)
 
@@ -60,106 +59,30 @@ if uploaded_file:
 
     # --- KPI CALCULATIONS ---
     total = len(df_filtered)
-    # NPS Logic: Promoters (Score 9-10), Passives (7-8), Detractors (0-6)
-    promoters = len(df_filtered[df_filtered['Sat_Score'] >= 9])
-    detractors = len(df_filtered[df_filtered['Sat_Score'] <= 6])
-    nps = round(((promoters - detractors) / total) * 100) if total > 0 else 0
-    avg_sat = round(df_filtered['Sat_Score'].mean(), 1)
+    if total > 0:
+        promoters = len(df_filtered[df_filtered['Sat_Score'] >= 9])
+        detractors = len(df_filtered[df_filtered['Sat_Score'] <= 6])
+        nps = round(((promoters - detractors) / total) * 100)
+        avg_sat = round(df_filtered['Sat_Score'].mean(), 1)
 
-    # --- METRICS BAR ---
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Employee NPS", f"{nps}")
-    m2.metric("Avg Satisfaction", f"{avg_sat} / 10")
-    m3.metric("Total Responses", total)
+        # --- METRICS BAR ---
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Employee NPS", f"{nps}")
+        m2.metric("Avg Satisfaction", f"{avg_sat} / 10")
+        m3.metric("Total Responses", total)
 
-    # --- VISUALS ---
-    tab1, tab2 = st.tabs(["📈 Sentiment Analysis", "📋 Textual Insights"])
+        # --- VISUALS ---
+        tab1, tab2 = st.tabs(["📈 Sentiment Analysis", "📋 Textual Insights"])
 
-    with tab1:
-        c1, c2 = st.columns(2)
-        
-        # Chart 1: Satisfaction by Dept or Manager
-        group_by = 'Reporting Manager' if sel_dept != "All Departments" else 'Department'
-        fig_sat = px.bar(
-            df_filtered.groupby(group_by)['Sat_Score'].mean().reset_index(),
-            x=group_by, y='Sat_Score', 
-            title=f"Satisfaction Drill-down: {group_by}",
-            color='Sat_Score', color_continuous_scale='RdYlGn', range_color=[0,10]
-        )
-        c1.plotly_chart(fig_sat, use_container_width=True)
-
-        # Chart 2: Mood Distribution
-        fig_mood = px.pie(
-            df_filtered, names='How are you feeling overall this month?',
-            title="Current Team Mood", hole=0.4
-        )
-        c2.plotly_chart(fig_mood, use_container_width=True)
-
-    with tab2:
-        st.write("### Raw Responses for Selected Group")
-        # Showing the text columns for context
-        st.dataframe(df_filtered[[
-            'Name', 'Department', 'Reporting Manager', 
-            'Key Accomplishments this Month', 'What’s not going well or causing disappointment?'
-        ]])
-
-    # --- AI AGENT ---
-    st.divider()
-    st.subheader("🤖 AI Data Architect")
-    if api_key:
-        try:
-        # 1. Use Flash for higher rate limits and faster response
-        # 2. Set safety_settings to 'BLOCK_NONE' if data is being flagged incorrectly
-            llm = ChatGoogleGenerativeAI(
-                model="gemini-1.5-flash", 
-                google_api_key=api_key,
-                temperature=0,
-                safety_settings={
-                    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-                    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-                }
+        with tab1:
+            c1, c2 = st.columns(2)
+            
+            # Chart 1: Satisfaction by Dept or Manager
+            group_by = 'Reporting Manager' if sel_dept != "All Departments" else 'Department'
+            fig_sat = px.bar(
+                df_filtered.groupby(group_by)['Sat_Score'].mean().reset_index(),
+                x=group_by, y='Sat_Score', 
+                title=f"Satisfaction Drill-down: {group_by}",
+                color='Sat_Score', color_continuous_scale='RdYlGn', range_color=[0,10]
             )
-    
-            # 3. Use 'tool-calling' agent type for better reliability with newer Gemini models
-            agent = create_pandas_dataframe_agent(
-                llm, 
-                df_filtered, 
-                verbose=False, 
-                allow_dangerous_code=True,
-                handle_parsing_errors=True,
-                agent_type="tool-calling"  # This is more stable for the current SDK
-            )
-    
-            # Chat interface
-            if "messages" not in st.session_state:
-                st.session_state.messages = []
-    
-            for message in st.session_state.messages:
-                with st.chat_message(message["role"]):
-                    st.markdown(message["content"])
-    
-            if query := st.chat_input("Ask about the data..."):
-                st.session_state.messages.append({"role": "user", "content": query})
-                with st.chat_message("user"):
-                    st.markdown(query)
-    
-                with st.chat_message("assistant"):
-                    with st.spinner("AI is calculating..."):
-                        try:
-                            response = agent.run(query)
-                            st.markdown(response)
-                            st.session_state.messages.append({"role": "assistant", "content": response})
-                        except Exception as e:
-                            st.error(f"The AI hit a limit or encountered an error. Try rephrasing or wait a moment. Detail: {e}")
-    
-    else:
-        st.warning("Enter API Key to enable natural language chat.")
-
-else:
-
-    st.info("Please upload the Excel/CSV file to begin.")
-
-
-
+            c1.plotly_chart(fig_sat, use_container_width=True)
