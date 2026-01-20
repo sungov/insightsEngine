@@ -180,8 +180,8 @@ if uploaded_file:
 
         # --- AI AGENT SECTION ---
         st.divider()
-        st.subheader("🤖 AI Chat Bot")
-        
+        #st.subheader("🤖 AI Chat Bot")
+        with st.expander("🤖 AI ChatBot (Ask questions about the data)", expanded=False):
         if api_key:
             try:
                 # Initialize OpenAI LLM                
@@ -240,6 +240,7 @@ if uploaded_file:
                 st.error(f"AI Setup Error: {init_err}")
         else:
             st.warning("Enter OpenAI API Key to begin.")
+
 
 
 
