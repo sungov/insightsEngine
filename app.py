@@ -106,7 +106,7 @@ if uploaded_file:
                 CUSTOM_PREFIX = "You are a Senior Manager at tsworks. Provide professional summaries. No code. No 'df' mentions. Markdown only."
                 
                 agent = create_pandas_dataframe_agent(
-                    llm, df_filtered, verbose=False, allow_dangerous_code=True,
+                    llm, df_filtered, verbose=False, allow_dangerous_code=False,
                     handle_parsing_errors=True, agent_type="openai-tools", prefix=CUSTOM_PREFIX
                 )
 
@@ -141,5 +141,6 @@ if uploaded_file:
                 st.error(f"AI Setup Error: {init_err}")
         else:
             st.warning("Enter OpenAI API Key to begin.")
+
 
 
