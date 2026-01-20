@@ -163,9 +163,10 @@ if uploaded_file:
                                 
                                 # The 'output' key contains the clean string answer
                                 clean_answer = result.get("output", "I couldn't generate a clear answer.")
+                                clean_text = clean_answer[0]['text']
                                 
-                                st.markdown(clean_answer)
-                                st.session_state.messages.append({"role": "assistant", "content": clean_answer})
+                                st.markdown(clean_text)
+                                st.session_state.messages.append({"role": "assistant", "content": clean_text})
                             except Exception as e:
                                 st.error(f"AI Analysis error: {e}")
             except Exception as init_err:
@@ -176,6 +177,7 @@ if uploaded_file:
         st.warning("No data available for the selected filters.")
 else:
     st.info("Please upload the Excel/CSV file to begin.")
+
 
 
 
