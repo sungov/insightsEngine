@@ -118,17 +118,32 @@ if uploaded_file:
                         HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
                     }
                 )
-        
-                # Ensure the agent type is set to 'tool-calling' for best compatibility
+
+                # Define a professional prompt for tsworks
+                CUSTOM_PREFIX = """
+                You are a Senior Data Analyst at tsworks. Your goal is to provide high-level, 
+                executive-style insights from employee pulse data.
+                
+                RULES:
+                1. Be concise. Do not explain your Python code unless asked.
+                2. Use professional language.
+                3. Always format your response using Markdown (bolding, lists, or tables).
+                4. If asked for a summary, provide 3 bullet points: Key Wins, Risks, and Recommendations.
+                5. If you cannot find data, politely state that the specific metric is unavailable for the selected filters.
+                """
+                
+                # Update your agent initialization
                 agent = create_pandas_dataframe_agent(
                     llm, 
                     df_filtered, 
-                    verbose=False, 
+                    verbose=False, # Keeps the backend clean
                     allow_dangerous_code=True,
                     handle_parsing_errors=True,
-                    agent_type="tool-calling"
+                    agent_type="tool-calling",
+                    prefix=CUSTOM_PREFIX # Injects your new rules
                 )
-
+        
+               
                 if "messages" not in st.session_state:
                     st.session_state.messages = []
 
@@ -157,4 +172,5 @@ if uploaded_file:
         st.warning("No data available for the selected filters.")
 else:
     st.info("Please upload the Excel/CSV file to begin.")
+
 
