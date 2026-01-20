@@ -37,7 +37,8 @@ if uploaded_file:
         df = pd.read_csv(uploaded_file)
     else:
         df = pd.read_excel(uploaded_file)
-    
+
+    df = df.fillna("N/A")
     # 1. Apply Mapping for Analytics
     df['Sat_Score'] = df['How satisfied are you working at tsworks?'].map(SAT_MAP).fillna(5)
     df['Mood_Score'] = df['How are you feeling overall this month?'].map(MOOD_MAP).fillna(3)
@@ -175,6 +176,7 @@ if uploaded_file:
         st.warning("No data available for the selected filters.")
 else:
     st.info("Please upload the Excel/CSV file to begin.")
+
 
 
 
