@@ -30,6 +30,10 @@ if uploaded_file:
     if "current_file" not in st.session_state or st.session_state.current_file != uploaded_file.name:
         st.session_state.messages = []
         st.session_state.current_file = uploaded_file.name
+        st.session_state.default_period_set = False
+        st.session_state.sel_year = None
+        st.session_state.sel_month = None
+
 
     # Load and Clean Data
     if uploaded_file.name.endswith('.csv'):
@@ -44,18 +48,76 @@ if uploaded_file:
     df['Mood_Score'] = df['How are you feeling overall this month?'].map(MOOD_MAP).fillna(3)
 
     # Sidebar Filters
-    depts = sorted(df['Department'].dropna().unique())
+        # --- NORMALIZE MONTH/YEAR COLUMNS ---
+    df["Year"] = pd.to_numeric(df["Year"], errors="coerce")
+    df["Month"] = df["Month"].astype(str).str.strip().str[:3].str.title()
+
+    # Month order map for sorting
+    MONTH_ORDER = {"Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
+                   "Jul": 7, "Aug": 8, "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12}
+
+    df["_MonthNum"] = df["Month"].map(MONTH_ORDER)
+    df["_PeriodKey"] = df["Year"] * 100 + df["_MonthNum"]
+
+    # Find latest available period in file
+    latest_key = df["_PeriodKey"].dropna().max()
+    latest_year = int(df.loc[df["_PeriodKey"] == latest_key, "Year"].iloc[0])
+    latest_month = df.loc[df["_PeriodKey"] == latest_key, "Month"].iloc[0]
+
+    # --- SIDEBAR FILTERS (Default = Latest Month) ---
+    years = sorted(df["Year"].dropna().unique().astype(int).tolist())
+
+    # When a new file loads, set default to latest. Keep user selection on reruns.
+    if "default_period_set" not in st.session_state or st.session_state.current_file != uploaded_file.name:
+        st.session_state.sel_year = latest_year
+        st.session_state.sel_month = latest_month
+        st.session_state.default_period_set = True
+
+    sel_year = st.sidebar.selectbox(
+        "Filter by Year",
+        options=years,
+        index=years.index(st.session_state.sel_year) if st.session_state.sel_year in years else years.index(latest_year),
+        key="sel_year"
+    )
+
+    # Month list depends on selected year
+    df_year = df[df["Year"] == sel_year]
+    months = [m for m in ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"] if m in set(df_year["Month"].dropna())]
+
+    # If current selected month isn’t available for that year, fallback to latest month in that year
+    if st.session_state.sel_month not in months:
+        if len(months) > 0:
+            st.session_state.sel_month = months[-1]  # last in calendar order among available
+        else:
+            st.session_state.sel_month = latest_month  # safe fallback
+
+    sel_month = st.sidebar.selectbox(
+        "Filter by Month",
+        options=months,
+        index=months.index(st.session_state.sel_month) if st.session_state.sel_month in months else 0,
+        key="sel_month"
+    )
+
+    # Apply Year + Month filters (always selected, not "All")
+    df_filtered = df[(df["Year"] == sel_year) & (df["Month"] == sel_month)].copy()
+
+    # Department filter (after time filters)
+    depts = sorted(df_filtered["Department"].dropna().unique())
     sel_dept = st.sidebar.selectbox("Filter by Department", ["All Departments"] + list(depts))
 
-    df_filtered = df[df['Department'] == sel_dept] if sel_dept != "All Departments" else df
-    
-    managers = sorted(df_filtered['Reporting Manager'].dropna().unique())
+    if sel_dept != "All Departments":
+        df_filtered = df_filtered[df_filtered["Department"] == sel_dept]
+
+    # Manager filter (after dept filter)
+    managers = sorted(df_filtered["Reporting Manager"].dropna().unique())
     sel_manager = st.sidebar.selectbox("Filter by Manager", ["All Managers"] + list(managers))
-    
+
     if sel_manager != "All Managers":
-        df_filtered = df_filtered[df_filtered['Reporting Manager'] == sel_manager]
+        df_filtered = df_filtered[df_filtered["Reporting Manager"] == sel_manager]
+
 
     # --- KPI CALCULATIONS ---
+    st.caption(f"Showing data for: **{sel_month} {sel_year}**")
     total = len(df_filtered)
     if total > 0:
         promoters = len(df_filtered[df_filtered['Sat_Score'] >= 9])
@@ -141,6 +203,7 @@ if uploaded_file:
                 st.error(f"AI Setup Error: {init_err}")
         else:
             st.warning("Enter OpenAI API Key to begin.")
+
 
 
 
