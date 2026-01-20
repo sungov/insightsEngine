@@ -107,7 +107,7 @@ if uploaded_file:
     st.divider()
     st.subheader("🤖 AI Data Architect")
     if api_key:
-        llm = ChatGoogleGenerativeAI(model="gemini-1.5-pro", google_api_key=api_key)
+        llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=api_key)
         agent = create_pandas_dataframe_agent(llm, df_filtered, allow_dangerous_code=True)
         
         query = st.text_input("Ask about this specific data (e.g., 'Summarize the common blockers for this manager')")
@@ -119,4 +119,5 @@ if uploaded_file:
         st.warning("Enter API Key to enable natural language chat.")
 
 else:
+
     st.info("Please upload the Excel/CSV file to begin.")
