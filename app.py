@@ -249,8 +249,7 @@ if uploaded_file:
                                         
                                         result = agent.invoke({"input": context + "\n\nUser question: " + query})
                                         response = result.get("output", "")
-
-                                            try:
+                                        try:
                                                 chart_spec = json.loads(response)
                                                 if chart_spec.get("chart_required"):
                                                     # Generate chart
@@ -273,7 +272,7 @@ if uploaded_file:
                                             
                                             except json.JSONDecodeError:
                                                 # Normal text response
-                                                st.markdown(response)
+                                                st.markdown(response)                                           
     
                                         clean_text = result.get("output", "No response generated.")
                                         st.markdown(clean_text)
@@ -284,6 +283,7 @@ if uploaded_file:
                     st.error(f"AI Setup Error: {init_err}")
             else:
                 st.warning("Enter OpenAI API Key to begin.")
+
 
 
 
