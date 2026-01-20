@@ -86,3 +86,73 @@ if uploaded_file:
                 color='Sat_Score', color_continuous_scale='RdYlGn', range_color=[0,10]
             )
             c1.plotly_chart(fig_sat, use_container_width=True)
+
+            # Chart 2: Mood Distribution
+            fig_mood = px.pie(
+                df_filtered, names='How are you feeling overall this month?',
+                title="Current Team Mood", hole=0.4
+            )
+            c2.plotly_chart(fig_mood, use_container_width=True)
+
+        with tab2:
+            st.write("### Raw Responses for Selected Group")
+            st.dataframe(df_filtered[[
+                'Name', 'Department', 'Reporting Manager', 
+                'Key Accomplishments this Month', 'What’s not going well or causing disappointment?'
+            ]])
+
+        # --- AI AGENT ---
+        st.divider()
+        st.subheader("🤖 AI Data Architect")
+        if api_key:
+            try:
+                # Initialize Gemini with specific safety and model settings
+                llm = ChatGoogleGenerativeAI(
+                    model="gemini-1.5-flash", 
+                    google_api_key=api_key,
+                    temperature=0,
+                    safety_settings={
+                        HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                        HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                        HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+                    }
+                )
+
+                agent = create_pandas_dataframe_agent(
+                    llm, 
+                    df_filtered, 
+                    verbose=False, 
+                    allow_dangerous_code=True,
+                    handle_parsing_errors=True,
+                    agent_type="tool-calling"
+                )
+
+                if "messages" not in st.session_state:
+                    st.session_state.messages = []
+
+                for message in st.session_state.messages:
+                    with st.chat_message(message["role"]):
+                        st.markdown(message["content"])
+
+                if query := st.chat_input("Ask about the data..."):
+                    st.session_state.messages.append({"role": "user", "content": query})
+                    with st.chat_message("user"):
+                        st.markdown(query)
+
+                    with st.chat_message("assistant"):
+                        with st.spinner("AI is calculating..."):
+                            try:
+                                response = agent.run(query)
+                                st.markdown(response)
+                                st.session_state.messages.append({"role": "assistant", "content": response})
+                            except Exception as e:
+                                st.error(f"AI Analysis error: {e}")
+            except Exception as init_err:
+                st.error(f"AI Initialization Error: {init_err}")
+        else:
+            st.warning("Enter API Key to enable natural language chat.")
+    else:
+        st.warning("No data available for the selected filters.")
+else:
+    st.info("Please upload the Excel/CSV file to begin.")
