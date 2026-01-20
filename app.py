@@ -106,9 +106,9 @@ if uploaded_file:
         st.subheader("🤖 AI Data Architect")
         if api_key:
             try:
-                # Initialize Gemini with specific safety and model settings
+                # Use a 2026 stable model like gemini-2.0-flash or gemini-2.5-flash
                 llm = ChatGoogleGenerativeAI(
-                    model="gemini-1.5-flash", 
+                    model="gemini-2.5-flash", # Updated model name
                     google_api_key=api_key,
                     temperature=0,
                     safety_settings={
@@ -118,7 +118,8 @@ if uploaded_file:
                         HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
                     }
                 )
-
+        
+                # Ensure the agent type is set to 'tool-calling' for best compatibility
                 agent = create_pandas_dataframe_agent(
                     llm, 
                     df_filtered, 
@@ -156,3 +157,4 @@ if uploaded_file:
         st.warning("No data available for the selected filters.")
 else:
     st.info("Please upload the Excel/CSV file to begin.")
+
