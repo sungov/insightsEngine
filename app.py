@@ -384,19 +384,24 @@ def build_chart_safe(df_in: pd.DataFrame, spec: dict):
         return px.bar(plot_df, x=x, y=y_plot, color=group_by)
     return px.line(plot_df, x=x, y=y_plot, color=group_by, markers=True)
 
-def kpi_card_grid(items):
-    # items: list of dict(title, value, sub)
-    html = '<div class="kpi-grid">'
-    for it in items:
-        html += f"""
-        <div class="kpi-card">
-          <div class="kpi-title">{it['title']}</div>
-          <div class="kpi-value">{it['value']}</div>
-          <div class="kpi-sub">{it.get('sub',"")}</div>
-        </div>
-        """
-    html += "</div>"
-    st.markdown(html, unsafe_allow_html=True)
+def kpi_row(items):
+    """
+    items = [{"title":..., "value":..., "sub":...}, ...]
+    """
+    cols = st.columns(len(items), gap="small")
+    for i, it in enumerate(items):
+        with cols[i]:
+            st.markdown(
+                f"""
+                <div class="kpi-card">
+                  <div class="kpi-title">{it['title']}</div>
+                  <div class="kpi-value">{it['value']}</div>
+                  <div class="kpi-sub">{it.get('sub','')}</div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
 
 def require_cols(df: pd.DataFrame, cols: list) -> bool:
     missing = [c for c in cols if c not in df.columns]
@@ -578,7 +583,7 @@ with tab_exec:
         amber = int((df_dash["Risk_Level"] == "Amber").sum())
         green = int((df_dash["Risk_Level"] == "Green").sum())
 
-        kpi_card_grid([
+        kpi_row([
             {"title":"Avg Health Index", "value": f"{avg_hi}", "sub":"0–100 composite (Satisfaction, Mood, Goals)"},
             {"title":"Employee NPS", "value": f"{nps}", "sub":"Promoters ≥9 vs Detractors ≤6"},
             {"title":"Avg Satisfaction", "value": f"{avg_sat}/10", "sub":"Current scope average"},
@@ -1082,6 +1087,7 @@ with tab_saved:
                     if st.button("Duplicate", key=f"dup_{i}"):
                         st.session_state.saved_insights.insert(i+1, dict(item))
                         st.rerun()
+
 
 
 
