@@ -1069,21 +1069,22 @@ You must return EXACTLY ONE of the following JSON objects (and nothing else):
 3) Table:
 {{
   "mode": "table",
-  "title": "<short title>",
-  "time_window": "this_month"|"last_3_months"|"last_6_months"|"last_12_months"|"all",
-  "entity": "employees"|"managers"|"departments",
-  "filters": {
-    "Department": "<optional exact value>",
-    "Reporting Manager": "<optional exact value>",
-    "Name": "<optional exact value>",
-    "Risk_Level": "<optional exact value>"
-  },
+  "title": "Employees at risk",
+  "time_window": "this_month",
+  "entity": "employees",
+  "filters": """{
+    "Department": null,
+    "Reporting Manager": null,
+    "Name": null,
+    "Risk_Level": null
+  }""",
   "columns": ["Name","Department","Reporting Manager","Risk_Level","Health_Index","Sat_Score","Mood_Score","Goal Progress"],
-  "sort_by": "<one column from columns or null>",
-  "sort_dir": "asc"|"desc",
-  "limit": 5|10|20|50,
-  "summary": "<executive insight>"
-}}
+  "sort_by": "Health_Index",
+  "sort_dir": "asc",
+  "limit": 20,
+  "summary": "Top risk appears concentrated in X; main drivers are low satisfaction and low goal progress."
+}
+}
 
 4) Chart:
 {{
@@ -1391,6 +1392,7 @@ with tab_saved:
                     if st.button("Duplicate", key=f"dup_{i}"):
                         st.session_state.saved_insights.insert(i+1, dict(item))
                         st.rerun()
+
 
 
 
