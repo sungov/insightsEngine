@@ -1,84 +1,85 @@
+# app.py
 import os
 import re
 import json
 import math
-import numpy as np
-import pandas as pd
+import hashlib
+from datetime import datetime
+
 import streamlit as st
+import pandas as pd
 import plotly.express as px
+import plotly.io as pio
 from langchain_openai import ChatOpenAI
 
-# =========================================================
-# PAGE CONFIG + STYLE
-# =========================================================
-st.set_page_config(page_title="tsworks | People Insights", layout="wide")
+# ============================================================
+# Page + Theme
+# ============================================================
+st.set_page_config(page_title="tsworks | People Insights (Exec)", layout="wide")
 
-st.markdown("""
+APP_CSS = """
 <style>
-/* overall spacing */
-.block-container { padding-top: 1rem; padding-bottom: 2rem; max-width: 1400px; }
-section[data-testid="stSidebar"] { border-right: 1px solid rgba(17,24,39,0.10); }
+/* --- Global --- */
+.block-container { padding-top: 1.2rem; padding-bottom: 2rem; }
+h1, h2, h3 { letter-spacing: -0.02em; }
+small { color: #6b7280; }
 
-/* headings */
-h1, h2, h3 { color: #0F2B46; }
-.small-muted { color: #6B7280; font-size: 0.9rem; }
-
-/* compact KPI tiles */
-.kpi-row { margin-top: 0.25rem; margin-bottom: 0.75rem; }
-.kpi-tile {
-  background: #FFFFFF;
-  border: 1px solid rgba(17,24,39,0.08);
+/* --- Card grid for compact KPIs --- */
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(180px, 1fr));
+  gap: 14px;
+  margin: 10px 0 2px 0;
+}
+.kpi-card{
+  background: white;
+  border: 1px solid rgba(15, 23, 42, 0.08);
   border-radius: 14px;
-  padding: 10px 12px;
-  box-shadow: 0 6px 16px rgba(0,0,0,0.04);
+  padding: 14px 14px;
+  box-shadow: 0 1px 0 rgba(15,23,42,.03);
 }
-.kpi-label { color: #6B7280; font-size: 0.78rem; margin-bottom: 4px; }
-.kpi-value { color: #111827; font-size: 1.30rem; font-weight: 800; line-height: 1.1; }
-.kpi-sub { color: #6B7280; font-size: 0.80rem; margin-top: 6px; }
+.kpi-title{ font-size: 12px; color: rgba(15,23,42,.62); margin-bottom: 6px; }
+.kpi-value{ font-size: 26px; font-weight: 700; color: rgba(15,23,42,.95); line-height: 1.05; }
+.kpi-sub{ margin-top: 8px; font-size: 12px; color: rgba(15,23,42,.55); }
 
-/* section cards */
-.card {
-  background: #FFFFFF;
-  border: 1px solid rgba(17,24,39,0.08);
-  border-radius: 14px;
-  padding: 14px 16px;
-  box-shadow: 0 6px 16px rgba(0,0,0,0.04);
-}
-
-/* pills */
-.pill {
-  display:inline-block;
-  padding: 5px 10px;
-  border-radius: 999px;
-  font-size: 0.82rem;
-  font-weight: 700;
-  border: 1px solid rgba(17,24,39,0.10);
-  margin-right: 6px;
-}
-.pill-green { background:#E8F7EE; color:#166534; }
-.pill-amber { background:#FFF4E5; color:#92400E; }
-.pill-red { background:#FDECEC; color:#991B1B; }
-.pill-blue { background:#EAF2FF; color:#1D4ED8; }
-.pill-gray { background:#F3F4F6; color:#374151; }
-
-/* chat container */
-.chat-shell {
-  background: #FFFFFF;
-  border: 1px solid rgba(17,24,39,0.10);
+/* --- Section headers --- */
+.section {
+  background: rgba(248,250,252,.8);
+  border: 1px solid rgba(15, 23, 42, 0.06);
   border-radius: 16px;
-  padding: 10px 10px;
-  box-shadow: 0 10px 20px rgba(0,0,0,0.04);
+  padding: 14px 14px;
+  margin: 10px 0 14px 0;
+}
+
+/* --- Chips --- */
+.chips { display:flex; flex-wrap:wrap; gap:8px; margin-top: 8px; }
+.chip {
+  display:inline-flex; align-items:center; gap:6px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(15,23,42,.10);
+  background: white;
+  font-size: 12px;
+  color: rgba(15,23,42,.75);
+}
+
+/* --- Tables --- */
+[data-testid="stDataFrame"] { border-radius: 14px; overflow: hidden; border: 1px solid rgba(15,23,42,.08); }
+
+/* --- Copilot container --- */
+.copilot-box {
+  border: 1px solid rgba(15,23,42,.08);
+  border-radius: 16px;
+  padding: 12px 12px;
+  background: rgba(255,255,255,.9);
 }
 </style>
-""", unsafe_allow_html=True)
+"""
+st.markdown(APP_CSS, unsafe_allow_html=True)
 
-
-# =========================================================
-# CONSTANTS + COLUMN NAMES
-# =========================================================
-APP_TITLE = "tsworks People Insights"
-APP_SUBTITLE = "Senior Management View — Org → Department → Manager → Employee"
-
+# ============================================================
+# Constants + Helpers
+# ============================================================
 SAT_MAP = {
     "Extremely satisfied": 10, "Satisfied": 8, "Somewhat satisfied": 7,
     "Neutral": 5, "Somewhat dissatisfied": 3, "Dissatisfied": 2, "Extremely dissatisfied": 0
@@ -89,62 +90,10 @@ MONTH_ORDER = {"Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
                "Jul": 7, "Aug": 8, "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12}
 MONTHS_CANON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
 
-COL_SAT_TEXT = "How satisfied are you working at tsworks?"
-COL_MOOD_TEXT = "How are you feeling overall this month?"
-COL_ACCOMPLISH = "Key Accomplishments this Month"
-COL_DISAPPOINT = "What’s not going well or causing disappointment?"
-COL_GOAL = "Goal Progress"
-COL_WORKLOAD = "How is your current workload?"
-COL_WLB = "How is your work-life balance?"
+REQUIRED_COLS = ["Name", "Department", "Reporting Manager", "Year", "Month"]
 
-REQUIRED_COLS = ["Year", "Month", "Department", "Reporting Manager", "Name"]
-
-
-# =========================================================
-# HELPERS
-# =========================================================
-def normalize_month(x):
-    return str(x).strip()[:3].title()
-
-def safe_cols(df, cols):
-    return [c for c in cols if c in df.columns]
-
-def add_period_cols(d: pd.DataFrame) -> pd.DataFrame:
-    d = d.copy()
-    d["Year"] = pd.to_numeric(d["Year"], errors="coerce")
-    d["Month"] = d["Month"].astype(str).map(normalize_month)
-    d["_MonthNum"] = d["Month"].map(MONTH_ORDER)
-    d["_PeriodKey"] = d["Year"] * 100 + d["_MonthNum"]
-    d["PeriodDate"] = pd.to_datetime(
-        d["Year"].astype("Int64").astype(str) + "-" + d["_MonthNum"].astype("Int64").astype(str) + "-01",
-        errors="coerce"
-    )
-    d["_PeriodLabel"] = d["Month"] + " " + d["Year"].astype("Int64").astype(str)
-    return d
-
-def compute_nps(df_month):
-    total = len(df_month)
-    if total == 0:
-        return 0
-    promoters = len(df_month[df_month["Sat_Score"] >= 9])
-    detractors = len(df_month[df_month["Sat_Score"] <= 6])
-    return round(((promoters - detractors) / total) * 100)
-
-def pill(text, kind="gray"):
-    cls = {
-        "green":"pill pill-green", "amber":"pill pill-amber", "red":"pill pill-red",
-        "blue":"pill pill-blue", "gray":"pill pill-gray"
-    }.get(kind, "pill pill-gray")
-    st.markdown(f"<span class='{cls}'>{text}</span>", unsafe_allow_html=True)
-
-def kpi_tile(label, value, sub=""):
-    st.markdown(f"""
-    <div class="kpi-tile">
-      <div class="kpi-label">{label}</div>
-      <div class="kpi-value">{value}</div>
-      <div class="kpi-sub">{sub}</div>
-    </div>
-    """, unsafe_allow_html=True)
+def safe_hash(s: str) -> str:
+    return hashlib.md5(s.encode("utf-8")).hexdigest()[:10]
 
 def extract_first_json(text: str):
     if not text:
@@ -157,71 +106,182 @@ def extract_first_json(text: str):
     except Exception:
         return None
 
-def apply_time_window(df: pd.DataFrame, window: str, anchor: pd.Timestamp):
-    d = df.dropna(subset=["PeriodDate"]).copy()
-    w = (window or "last_6_months").lower().strip()
-    if w == "all":
-        return d
-    if w == "this_month":
-        return d[d["PeriodDate"] == anchor].copy()
-    months = {"last_3_months": 3, "last_6_months": 6, "last_12_months": 12}.get(w, 6)
-    start = anchor - pd.DateOffset(months=months-1)
-    return d[(d["PeriodDate"] >= start) & (d["PeriodDate"] <= anchor)].copy()
+def add_period_cols(d: pd.DataFrame) -> pd.DataFrame:
+    d = d.copy()
+    d["Year"] = pd.to_numeric(d["Year"], errors="coerce")
+    d["Month"] = d["Month"].astype(str).str.strip().str[:3].str.title()
+    d["_MonthNum"] = d["Month"].map(MONTH_ORDER)
+    d["_PeriodKey"] = d["Year"] * 100 + d["_MonthNum"]
+    d["PeriodDate"] = pd.to_datetime(
+        d["Year"].astype("Int64").astype(str) + "-" + d["_MonthNum"].astype("Int64").astype(str) + "-01",
+        errors="coerce"
+    )
+    d["_PeriodLabel"] = d["Month"] + " " + d["Year"].astype("Int64").astype(str)
+    return d
 
-def parse_goal_score(goal_text: str) -> float:
-    """Heuristic parser for goal progress to 0..10."""
-    s = str(goal_text).strip().lower()
-    if s in ["n/a", "na", "none", ""]:
+def apply_time_window(d: pd.DataFrame, time_window: str, default_year: int, default_month: str) -> pd.DataFrame:
+    d = add_period_cols(d)
+    d = d.dropna(subset=["PeriodDate"])
+    tw = (time_window or "all").strip().lower()
+
+    if tw == "this_month":
+        return d[(d["Year"] == default_year) & (d["Month"] == default_month)].copy()
+    if tw == "last_3_months":
+        end = d["PeriodDate"].max()
+        start = end - pd.DateOffset(months=3)
+        return d[(d["PeriodDate"] >= start) & (d["PeriodDate"] <= end)].copy()
+    if tw == "last_6_months":
+        end = d["PeriodDate"].max()
+        start = end - pd.DateOffset(months=6)
+        return d[(d["PeriodDate"] >= start) & (d["PeriodDate"] <= end)].copy()
+    if tw == "last_12_months":
+        end = d["PeriodDate"].max()
+        start = end - pd.DateOffset(months=12)
+        return d[(d["PeriodDate"] >= start) & (d["PeriodDate"] <= end)].copy()
+    return d.copy()
+
+def safe_number(x, default=None):
+    try:
+        if pd.isna(x): return default
+        if isinstance(x, (int,float)): return float(x)
+        s = str(x).strip()
+        # accept "85%" or "85"
+        s = s.replace("%","")
+        return float(s)
+    except Exception:
+        return default
+
+def compute_goal_score_from_text(val) -> float:
+    """
+    Heuristic: if Goal Progress is numeric/percent -> map to 0..10.
+    Otherwise keyword-based scoring.
+    """
+    num = safe_number(val, None)
+    if num is not None:
+        # treat 0..100 or 0..10
+        if num > 10:
+            return max(0, min(10, num / 10.0))
+        return max(0, min(10, num))
+    s = str(val).lower()
+    if s in ["n/a", "na", "none", ""] or s == "n/a":
         return 5.0
-    m = re.search(r"(\d+(?:\.\d+)?)\s*/\s*10", s)
-    if m:
-        return float(np.clip(float(m.group(1)), 0, 10))
-    m = re.search(r"(\d+(?:\.\d+)?)\s*%", s)
-    if m:
-        return float(np.clip(float(m.group(1))/10.0, 0, 10))
-    if "on track" in s or "good" in s or "progress" in s:
-        return 7.5
-    if "at risk" in s or "delayed" in s or "behind" in s:
-        return 4.0
-    if "blocked" in s or "stuck" in s:
-        return 3.0
-    return 5.0
+    pos = ["on track", "good", "great", "completed", "achieved", "progress", "done", "ahead"]
+    neg = ["blocked", "stuck", "behind", "delayed", "risk", "struggle", "not", "issue"]
+    score = 5.0
+    if any(w in s for w in pos): score += 2.0
+    if any(w in s for w in neg): score -= 2.0
+    return max(0, min(10, score))
 
-def risk_bucket(burnout_index: float) -> str:
-    if burnout_index >= 13: return "Critical"
-    if burnout_index >= 8:  return "Watchlist"
-    return "Healthy"
+def compute_health_index(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Health_Index (0-100) composite of:
+      - Sat_Score (0-10) -> 0..100
+      - Mood_Score (1-5) -> 0..100
+      - Goal_Score (0-10) -> 0..100
+    Weighted for exec readability.
+    """
+    d = df.copy()
+    if "Sat_Score" not in d.columns:
+        d["Sat_Score"] = 5
+    if "Mood_Score" not in d.columns:
+        d["Mood_Score"] = 3
 
-def build_chart(chart_df: pd.DataFrame, spec: dict):
-    chart_type = (spec.get("chart_type") or "line").lower().strip()
+    if "Goal Progress" in d.columns:
+        d["Goal_Score"] = d["Goal Progress"].apply(compute_goal_score_from_text)
+    else:
+        d["Goal_Score"] = 5.0
+
+    sat_100 = (d["Sat_Score"] / 10.0) * 100.0
+    mood_100 = ((d["Mood_Score"] - 1) / 4.0) * 100.0  # 1..5 -> 0..100
+    goals_100 = (d["Goal_Score"] / 10.0) * 100.0
+
+    d["Health_Index"] = (0.45 * sat_100 + 0.25 * mood_100 + 0.30 * goals_100).round(1)
+    return d
+
+def classify_risk(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Risk_Level based on:
+      - current Health_Index
+      - Burned Out / Challenged mood
+      - negative trend last 3 months
+    """
+    d = df.copy()
+    d = add_period_cols(d)
+    d = d.dropna(subset=["PeriodDate"])
+
+    # compute month-on-month trend per employee
+    d = d.sort_values(["Name","PeriodDate"])
+    d["Health_Delta_1"] = d.groupby("Name")["Health_Index"].diff(1)
+    d["Health_Delta_3"] = d.groupby("Name")["Health_Index"].diff(3)
+
+    def risk_row(r):
+        hi = safe_number(r.get("Health_Index"), 50) or 50
+        mood = str(r.get("How are you feeling overall this month?", "")).strip().lower()
+        d1 = safe_number(r.get("Health_Delta_1"), 0) or 0
+        d3 = safe_number(r.get("Health_Delta_3"), 0) or 0
+
+        # base
+        if hi >= 75:
+            base = "Green"
+        elif hi >= 60:
+            base = "Amber"
+        else:
+            base = "Red"
+
+        # mood override
+        if "burned" in mood or "burnt" in mood:
+            return "Red"
+        if "challenged" in mood and base == "Green":
+            base = "Amber"
+
+        # trend override
+        if d3 <= -12 or d1 <= -8:
+            if base == "Green":
+                base = "Amber"
+            elif base == "Amber":
+                base = "Red"
+        return base
+
+    d["Risk_Level"] = d.apply(risk_row, axis=1)
+    return d
+
+def sanitize_chart_spec(spec: dict, df_cols: list) -> dict:
+    allowed = set(df_cols)
+
+    chart_type = (spec.get("chart_type") or "line").strip().lower()
+    if chart_type not in {"line","bar","pie","hist","scatter"}:
+        chart_type = "line"
+
     x = spec.get("x")
     y = spec.get("y")
     group_by = spec.get("group_by")
 
-    allowed = set(chart_df.columns)
-
-    # ----------------------------
-    # SANITIZE x / y / group_by
-    # ----------------------------
-    # Default x if missing/invalid
+    # ---- SANITIZE x
     if not x or x not in allowed:
         if "_PeriodLabel" in allowed:
             x = "_PeriodLabel"
         elif "Department" in allowed:
             x = "Department"
         else:
-            x = next(iter(allowed))  # last resort
+            x = next(iter(allowed))
 
-    # If group_by invalid, drop it (don't crash)
+    # ---- SANITIZE group_by
+    if group_by in ["", "none", "null"]:
+        group_by = None
     if group_by and group_by not in allowed:
         group_by = None
 
-    # y can be things like: "Sat_Score_mean" / "Mood_Score_mean" / "count"
-    # We'll parse it later, but if it is a raw column name and invalid, fallback
-    if isinstance(y, str) and y not in allowed:
-        # allow aggregator strings (handled later)
-        if not (y.endswith("_mean") or y.endswith("_avg") or y.endswith("_sum") or y.lower() in ["count", "responses", "total_responses"]):
-            # fallback to best available numeric column
+    # ---- SANITIZE y (supports tokens + agg)
+    if not y:
+        y = "count"
+    if isinstance(y, str):
+        y_low = y.lower()
+        ok = (
+            y_low in {"count","responses","total_responses"} or
+            y.endswith("_mean") or y.endswith("_avg") or y.endswith("_sum") or
+            y in allowed
+        )
+        if not ok:
             if "Health_Index" in allowed:
                 y = "Health_Index_mean"
             elif "Sat_Score" in allowed:
@@ -229,642 +289,819 @@ def build_chart(chart_df: pd.DataFrame, spec: dict):
             elif "Mood_Score" in allowed:
                 y = "Mood_Score_mean"
             else:
-                # as a last resort, try "count"
                 y = "count"
 
-    # (Optional) enforce time-series correctness:
-    if chart_type == "line" and x in ["Month", "Year", "PeriodDate", "_PeriodKey"]:
-        # prefer _PeriodLabel for display
-        if "_PeriodLabel" in allowed:
-            x = "_PeriodLabel"
-    
-    if y_col and y_col not in allowed:
-        raise ValueError(f"Invalid y column: {y_col}")
+    # enforce time axis best practice for line
+    if chart_type == "line" and x in {"Month","Year","PeriodDate","_PeriodKey"} and "_PeriodLabel" in allowed:
+        x = "_PeriodLabel"
 
-    # time axis handling
-    time_like = x in ["Month", "Year", "_PeriodLabel", "PeriodDate", "_PeriodKey"]
+    spec["chart_type"] = chart_type
+    spec["x"] = x
+    spec["y"] = y
+    spec["group_by"] = group_by
+    return spec
 
-    if chart_type == "hist":
-        col = y_col if (y_col and y_col in allowed) else "Health_Index"
-        return px.histogram(chart_df, x=col, color=group_by, title=f"Distribution: {col}")
+def compute_y(series_df: pd.DataFrame, y_token: str, group_cols: list):
+    y_token = str(y_token)
 
-    if time_like:
-        d = chart_df.dropna(subset=["PeriodDate"]).copy()
-        group_cols = ["PeriodDate", "_PeriodLabel"]
-        if group_by:
-            group_cols.append(group_by)
+    if y_token.lower() in {"count","responses","total_responses"}:
+        plot_df = series_df.groupby(group_cols, as_index=False).size().rename(columns={"size":"Value"})
+        return plot_df, "Value"
 
-        if agg == "count":
-            plot_df = d.groupby(group_cols, as_index=False).size().rename(columns={"size":"Value"})
-            y_plot = "Value"
-        else:
-            if agg is None:
-                agg = "mean"
-            plot_df = d.groupby(group_cols, as_index=False).agg({y_col: agg})
-            y_plot = y_col
+    agg = "mean"
+    y_col = y_token
+    if y_token.endswith("_mean"):
+        agg = "mean"
+        y_col = y_token.replace("_mean","")
+    elif y_token.endswith("_avg"):
+        agg = "mean"
+        y_col = y_token.replace("_avg","")
+    elif y_token.endswith("_sum"):
+        agg = "sum"
+        y_col = y_token.replace("_sum","")
 
+    if y_col not in series_df.columns:
+        num_cols = [c for c in series_df.columns if pd.api.types.is_numeric_dtype(series_df[c])]
+        if not num_cols:
+            plot_df = series_df.groupby(group_cols, as_index=False).size().rename(columns={"size":"Value"})
+            return plot_df, "Value"
+        y_col = num_cols[0]
+
+    plot_df = series_df.groupby(group_cols, as_index=False).agg({y_col: agg})
+    return plot_df, y_col
+
+def build_chart_safe(df_in: pd.DataFrame, spec: dict):
+    chart_df = df_in.copy()
+
+    if "_PeriodLabel" not in chart_df.columns or "PeriodDate" not in chart_df.columns:
+        chart_df = add_period_cols(chart_df)
+
+    spec = sanitize_chart_spec(spec, chart_df.columns.tolist())
+
+    chart_type = spec["chart_type"]
+    x = spec["x"]
+    y = spec["y"]
+    group_by = spec.get("group_by")
+
+    if x == "_PeriodLabel":
+        chart_df = chart_df.dropna(subset=["PeriodDate"])
+        group_cols = ["PeriodDate","_PeriodLabel"] + ([group_by] if group_by else [])
+        plot_df, y_plot = compute_y(chart_df, y, group_cols)
         plot_df = plot_df.sort_values("PeriodDate")
 
         if chart_type == "line":
-            return px.line(plot_df, x="_PeriodLabel", y=y_plot, color=group_by, markers=True, title="Trend")
+            return px.line(plot_df, x="_PeriodLabel", y=y_plot, color=group_by, markers=True)
         if chart_type == "bar":
-            return px.bar(plot_df, x="_PeriodLabel", y=y_plot, color=group_by, title="Trend")
-        return px.bar(plot_df, x="_PeriodLabel", y=y_plot, color=group_by, title="Trend")
+            return px.bar(plot_df, x="_PeriodLabel", y=y_plot, color=group_by)
+        return px.bar(plot_df, x="_PeriodLabel", y=y_plot, color=group_by)
 
-    # non-time charts
     if chart_type == "pie":
-        if agg == "count":
-            plot_df = chart_df.groupby(x, as_index=False).size().rename(columns={"size":"Value"})
-            return px.pie(plot_df, names=x, values="Value", hole=0.45, title="Share")
-        if agg is None:
-            agg = "mean"
-        plot_df = chart_df.groupby(x, as_index=False).agg({y_col: agg})
-        return px.pie(plot_df, names=x, values=y_col, hole=0.45, title="Share")
+        group_cols = [x] + ([group_by] if group_by else [])
+        plot_df, y_plot = compute_y(chart_df, y, group_cols)
+        if group_by:
+            plot_df = plot_df.groupby(x, as_index=False)[y_plot].sum()
+        return px.pie(plot_df, names=x, values=y_plot, hole=0.4)
+
+    if chart_type == "hist":
+        y_col = str(y).replace("_mean","").replace("_avg","").replace("_sum","")
+        if y_col not in chart_df.columns or not pd.api.types.is_numeric_dtype(chart_df[y_col]):
+            for c in ["Health_Index","Sat_Score","Mood_Score"]:
+                if c in chart_df.columns and pd.api.types.is_numeric_dtype(chart_df[c]):
+                    y_col = c
+                    break
+        return px.histogram(chart_df, x=y_col, color=group_by)
+
+    if chart_type == "scatter":
+        y_col = str(y).replace("_mean","").replace("_avg","").replace("_sum","")
+        if y_col not in chart_df.columns:
+            y_col = "Health_Index" if "Health_Index" in chart_df.columns else y_col
+        return px.scatter(chart_df, x=x, y=y_col, color=group_by)
+
+    group_cols = [x] + ([group_by] if group_by else [])
+    plot_df, y_plot = compute_y(chart_df, y, group_cols)
 
     if chart_type == "bar":
-        if agg == "count":
-            plot_df = chart_df.groupby([x] + ([group_by] if group_by else []), as_index=False).size()\
-                              .rename(columns={"size":"Value"})
-            return px.bar(plot_df, x=x, y="Value", color=group_by, title="Bar")
-        if agg is None:
-            agg = "mean"
-        group_cols = [x] + ([group_by] if group_by else [])
-        plot_df = chart_df.groupby(group_cols, as_index=False).agg({y_col: agg})
-        return px.bar(plot_df, x=x, y=y_col, color=group_by, title="Bar")
+        return px.bar(plot_df, x=x, y=y_plot, color=group_by)
+    return px.line(plot_df, x=x, y=y_plot, color=group_by, markers=True)
 
-    # default line
-    if agg is None:
-        agg = "mean"
-    group_cols = [x] + ([group_by] if group_by else [])
-    plot_df = chart_df.groupby(group_cols, as_index=False).agg({y_col: agg})
-    return px.line(plot_df, x=x, y=y_col, color=group_by, markers=True, title="Line")
+def kpi_card_grid(items):
+    # items: list of dict(title, value, sub)
+    html = '<div class="kpi-grid">'
+    for it in items:
+        html += f"""
+        <div class="kpi-card">
+          <div class="kpi-title">{it['title']}</div>
+          <div class="kpi-value">{it['value']}</div>
+          <div class="kpi-sub">{it.get('sub',"")}</div>
+        </div>
+        """
+    html += "</div>"
+    st.markdown(html, unsafe_allow_html=True)
 
+def require_cols(df: pd.DataFrame, cols: list) -> bool:
+    missing = [c for c in cols if c not in df.columns]
+    if missing:
+        st.error(f"Missing required columns in uploaded file: {missing}")
+        return False
+    return True
 
-# =========================================================
-# HEADER
-# =========================================================
-st.markdown(f"<h1>{APP_TITLE}</h1>", unsafe_allow_html=True)
-st.markdown(f"<div class='small-muted'>{APP_SUBTITLE}</div>", unsafe_allow_html=True)
+# ============================================================
+# Header
+# ============================================================
+st.title("👥 tsworks People Insights — Executive")
+st.caption("Senior management view: org + department + manager + employee trends with AI Copilot.")
 
-
-# =========================================================
-# SIDEBAR (clean + grouped)
-# =========================================================
+# ============================================================
+# Sidebar (clear + less confusing)
+# ============================================================
 with st.sidebar:
-    st.header("Controls")
-
+    st.header("Data")
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
-        st.error("OPENAI_API_KEY not set.")
+        st.error("Set OPENAI_API_KEY in your environment.")
         st.stop()
 
-    uploaded_file = st.file_uploader("Upload Employee Pulse (xlsx/csv)", type=["xlsx", "csv"], key="file_uploader")
+    uploaded_file = st.file_uploader("Upload Employee Pulse (Excel/CSV)", type=["xlsx","csv"])
 
-    st.caption("Tip: Dashboard filters affect charts/tables. The Copilot uses the full dataset unless you ask otherwise.")
+    st.divider()
+    st.header("Dashboard Scope")
+    st.caption("These filters affect dashboard & tables (not the AI Copilot).")
+    # (year/month defaults are set after load)
+    # dept/manager applied after the time scope
 
-
+# ============================================================
+# Load & prep data
+# ============================================================
 if not uploaded_file:
     st.info("Upload an Excel/CSV to start.")
     st.stop()
 
-# =========================================================
-# LOAD DATA
-# =========================================================
-df_raw = pd.read_csv(uploaded_file) if uploaded_file.name.lower().endswith(".csv") else pd.read_excel(uploaded_file)
+# reset state when file changes
+if "current_file" not in st.session_state or st.session_state.current_file != uploaded_file.name:
+    st.session_state.current_file = uploaded_file.name
+    # dashboard widgets
+    for k in ["dash_year","dash_month","dash_dept","dash_mgr"]:
+        st.session_state.pop(k, None)
+    # copilot memory persists across filter changes; reset only on new file
+    st.session_state["copilot_messages"] = []
+    st.session_state["saved_insights"] = []
+    st.session_state["last_copilot"] = None
+
+df_raw = pd.read_csv(uploaded_file) if uploaded_file.name.endswith(".csv") else pd.read_excel(uploaded_file)
 df_raw.columns = df_raw.columns.str.strip()
 df_raw = df_raw.fillna("N/A")
 
-missing = [c for c in REQUIRED_COLS if c not in df_raw.columns]
-if missing:
-    st.error(f"Missing required columns: {missing}")
+if not require_cols(df_raw, REQUIRED_COLS):
     st.stop()
 
-df = add_period_cols(df_raw)
-df = df.dropna(subset=["PeriodDate"]).copy()
+# normalize time cols
+df_raw["Year"] = pd.to_numeric(df_raw["Year"], errors="coerce")
+df_raw["Month"] = df_raw["Month"].astype(str).str.strip().str[:3].str.title()
 
 # derived scores
-df["Sat_Score"] = df[COL_SAT_TEXT].map(SAT_MAP).fillna(5) if COL_SAT_TEXT in df.columns else 5
-df["Mood_Score"] = df[COL_MOOD_TEXT].map(MOOD_MAP).fillna(3) if COL_MOOD_TEXT in df.columns else 3
-df["Goal_Score"] = df[COL_GOAL].apply(parse_goal_score) if COL_GOAL in df.columns else 5.0
+if "How satisfied are you working at tsworks?" in df_raw.columns:
+    df_raw["Sat_Score"] = df_raw["How satisfied are you working at tsworks?"].map(SAT_MAP).fillna(5)
+else:
+    df_raw["Sat_Score"] = 5
 
-# composite indices (0..100)
-df["Health_Index"] = (0.45*df["Sat_Score"] + 0.35*df["Mood_Score"] + 0.20*df["Goal_Score"]) * 10
-df["Burnout_Index"] = (10 - df["Sat_Score"]) + (5 - df["Mood_Score"]) + (6 - df["Goal_Score"]/2)
-df["Risk_Level"] = df["Burnout_Index"].apply(risk_bucket)
+if "How are you feeling overall this month?" in df_raw.columns:
+    df_raw["Mood_Score"] = df_raw["How are you feeling overall this month?"].map(MOOD_MAP).fillna(3)
+else:
+    df_raw["Mood_Score"] = 3
 
-# latest period defaults
-latest_pd = df["PeriodDate"].max()
-latest_row = df[df["PeriodDate"] == latest_pd].iloc[0]
-latest_year = int(latest_row["Year"])
-latest_month = str(latest_row["Month"])
+df_full = add_period_cols(df_raw)
+df_full = compute_health_index(df_full)
+df_full = classify_risk(df_full)
 
-# session state init (keeps UI stable on refresh)
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-if "sel_year" not in st.session_state:
-    st.session_state.sel_year = latest_year
-if "sel_month" not in st.session_state:
-    st.session_state.sel_month = latest_month
-if "trend_window" not in st.session_state:
-    st.session_state.trend_window = "last_6_months"
-if "scope_dept" not in st.session_state:
-    st.session_state.scope_dept = "All Departments"
-if "scope_mgr" not in st.session_state:
-    st.session_state.scope_mgr = "All Managers"
+# latest period
+latest_key = df_full["_PeriodKey"].dropna().max()
+latest_row = df_full.loc[df_full["_PeriodKey"] == latest_key].iloc[0]
+LATEST_YEAR = int(latest_row["Year"])
+LATEST_MONTH = str(latest_row["Month"])
 
-# =========================================================
-# SIDEBAR CONTROLS (very clear grouping)
-# =========================================================
+years = sorted(df_full["Year"].dropna().unique().astype(int).tolist())
+if not years:
+    st.error("No valid Year values found.")
+    st.stop()
+
+# ============================================================
+# Sidebar: Dashboard filters (defaults to latest)
+# ============================================================
 with st.sidebar:
+    # default year
+    if st.session_state.get("dash_year") not in years:
+        st.session_state["dash_year"] = LATEST_YEAR
+
+    dash_year = st.selectbox("Year", years, index=years.index(st.session_state["dash_year"]), key="dash_year")
+
+    # months for that year
+    df_year = df_full[df_full["Year"] == dash_year]
+    months = [m for m in MONTHS_CANON if m in set(df_year["Month"].dropna())]
+    if not months:
+        months = [LATEST_MONTH]
+
+    if st.session_state.get("dash_month") not in months:
+        st.session_state["dash_month"] = max(months, key=lambda m: MONTH_ORDER.get(m, 0))
+
+    dash_month = st.selectbox("Month", months, index=months.index(st.session_state["dash_month"]), key="dash_month")
+
+    # dept/mgr options from time slice
+    base_slice = df_full[(df_full["Year"] == dash_year) & (df_full["Month"] == dash_month)].copy()
+    depts = sorted(base_slice["Department"].dropna().unique().tolist())
+    mgrs = sorted(base_slice["Reporting Manager"].dropna().unique().tolist())
+
+    if st.session_state.get("dash_dept") not in (["All"] + depts):
+        st.session_state["dash_dept"] = "All"
+    dash_dept = st.selectbox("Department", ["All"] + depts, key="dash_dept")
+
+    # manager list depends on dept filter for clarity
+    mgr_slice = base_slice.copy()
+    if dash_dept != "All":
+        mgr_slice = mgr_slice[mgr_slice["Department"] == dash_dept]
+    mgrs2 = sorted(mgr_slice["Reporting Manager"].dropna().unique().tolist())
+
+    if st.session_state.get("dash_mgr") not in (["All"] + mgrs2):
+        st.session_state["dash_mgr"] = "All"
+    dash_mgr = st.selectbox("Manager", ["All"] + mgrs2, key="dash_mgr")
+
     st.divider()
+    if st.button("Reset dashboard filters to latest", use_container_width=True):
+        st.session_state["dash_year"] = LATEST_YEAR
+        st.session_state["dash_month"] = LATEST_MONTH
+        st.session_state["dash_dept"] = "All"
+        st.session_state["dash_mgr"] = "All"
+        st.rerun()
 
-    with st.expander("📅 Period (what month are you reviewing?)", expanded=True):
-        years = sorted(df["Year"].dropna().unique().astype(int).tolist())
-        if st.session_state.sel_year not in years:
-            st.session_state.sel_year = latest_year
+# ============================================================
+# Apply dashboard filters
+# ============================================================
+df_dash = df_full[(df_full["Year"] == dash_year) & (df_full["Month"] == dash_month)].copy()
+if dash_dept != "All":
+    df_dash = df_dash[df_dash["Department"] == dash_dept]
+if dash_mgr != "All":
+    df_dash = df_dash[df_dash["Reporting Manager"] == dash_mgr]
 
-        sel_year = st.selectbox(
-            "Year",
-            years,
-            index=years.index(st.session_state["sel_year"]),
-            key="sel_year"
-        )
-        
-        df_year = df[df["Year"] == sel_year]
-        months = [m for m in MONTHS_CANON if m in set(df_year["Month"].dropna())]
-        if not months:
-            months = [latest_month]
-        
-        # if current month becomes invalid after year switch, reset it
-        if st.session_state.get("sel_month") not in months:
-            st.session_state["sel_month"] = max(months, key=lambda m: MONTH_ORDER.get(m, 0))
-        
-        sel_month = st.selectbox(
-            "Month",
-            months,
-            index=months.index(st.session_state["sel_month"]),
-            key="sel_month"
-        )
-
-
-    with st.expander("📈 Trend Window (for trend charts)", expanded=False):
-        trend_window = st.selectbox(
-            "Window",
-            ["this_month", "last_3_months", "last_6_months", "last_12_months", "all"],
-            index=["this_month", "last_3_months", "last_6_months", "last_12_months", "all"].index(st.session_state.trend_window),
-            key="trend_window"
-        )
-
-    with st.expander("🎯 Scope (applies to dashboard only)", expanded=True):
-        st.caption("Use this to focus the dashboard. Copilot still uses the full dataset by default.")
-        depts = sorted(df["Department"].dropna().unique().tolist())
-        sel_dept = st.selectbox("Department", ["All Departments"] + depts, key="scope_dept")
-
-        df_scope = df.copy()
-        if sel_dept != "All Departments":
-            df_scope = df_scope[df_scope["Department"] == sel_dept]
-
-        mgrs = sorted(df_scope["Reporting Manager"].dropna().unique().tolist())
-        sel_mgr = st.selectbox("Manager", ["All Managers"] + mgrs, key="scope_mgr")
-
-# anchor period for charts
-anchor_pd = pd.to_datetime(f"{sel_year}-{MONTH_ORDER.get(sel_month, 1)}-01")
-
-# month slice (org)
-df_month = df[(df["Year"] == sel_year) & (df["Month"] == sel_month)].copy()
-
-# scoped month slice (dashboard)
-df_scoped_month = df_month.copy()
-if sel_dept != "All Departments":
-    df_scoped_month = df_scoped_month[df_scoped_month["Department"] == sel_dept]
-if sel_mgr != "All Managers":
-    df_scoped_month = df_scoped_month[df_scoped_month["Reporting Manager"] == sel_mgr]
-
-# window slices
-df_window = apply_time_window(df, trend_window, anchor_pd)
-df_scoped_window = df_window.copy()
-if sel_dept != "All Departments":
-    df_scoped_window = df_scoped_window[df_scoped_window["Department"] == sel_dept]
-if sel_mgr != "All Managers":
-    df_scoped_window = df_scoped_window[df_scoped_window["Reporting Manager"] == sel_mgr]
-
-# =========================================================
-# TOP BAR CONTEXT (clean + quick)
-# =========================================================
-left, right = st.columns([2, 1])
-with left:
-    st.caption(f"Reviewing: **{sel_month} {sel_year}**  |  Trend window: **{trend_window.replace('_',' ')}**")
-with right:
-    if sel_dept == "All Departments" and sel_mgr == "All Managers":
-        pill("Scope: Org-wide", "blue")
-    elif sel_dept != "All Departments" and sel_mgr == "All Managers":
-        pill(f"Scope: {sel_dept}", "blue")
-    else:
-        pill(f"Scope: {sel_dept} / {sel_mgr}", "blue")
-
-
-# =========================================================
-# TABS
-# =========================================================
-tabs = st.tabs([
-    "🏠 Executive Snapshot",
-    "🏢 Department",
-    "👨‍💼 Manager",
-    "👤 Employee 360°",
-    "📊 Trends",
-    "🤖 People AI Copilot",
-    "📂 Data Explorer",
+# ============================================================
+# Tabs
+# ============================================================
+tab_exec, tab_org, tab_emp, tab_watch, tab_copilot, tab_saved = st.tabs([
+    "Executive Snapshot",
+    "Org & Dept Insights",
+    "Employee Explorer",
+    "Watchlist",
+    "People AI Copilot",
+    "Saved Insights",
 ])
 
+# ============================================================
+# Executive Snapshot (compact cards + clear scope)
+# ============================================================
+with tab_exec:
+    st.markdown('<div class="section">', unsafe_allow_html=True)
+    st.subheader("Executive Snapshot")
+    st.caption(f"Dashboard scope: **{dash_month} {dash_year}** • Department: **{dash_dept}** • Manager: **{dash_mgr}**")
+    st.markdown("</div>", unsafe_allow_html=True)
 
-# =========================================================
-# TAB 1: EXECUTIVE SNAPSHOT (compact KPIs)
-# =========================================================
-with tabs[0]:
-    st.markdown("### Executive Snapshot")
-
-    base = df_scoped_month  # dashboard scope
-
-    if base.empty:
-        st.warning("No data for current period/scope selection.")
+    total = len(df_dash)
+    if total == 0:
+        st.warning("No responses in this scope.")
     else:
-        avg_health = base["Health_Index"].mean()
-        avg_sat = base["Sat_Score"].mean()
-        avg_mood = base["Mood_Score"].mean()
-        avg_goal = base["Goal_Score"].mean()
-        nps = compute_nps(base)
-        headcount = base["Name"].nunique()
-        responses = len(base)
-        critical = base[base["Risk_Level"] == "Critical"]["Name"].nunique()
-        watch = base[base["Risk_Level"] == "Watchlist"]["Name"].nunique()
+        promoters = len(df_dash[df_dash["Sat_Score"] >= 9])
+        detractors = len(df_dash[df_dash["Sat_Score"] <= 6])
+        nps = round(((promoters - detractors) / total) * 100)
 
-        # compact KPI tiles in one row
-        st.markdown("<div class='kpi-row'></div>", unsafe_allow_html=True)
-        c = st.columns(7)
-        with c[0]: kpi_tile("Health Index", f"{avg_health:.1f}", "0–100 composite")
-        with c[1]: kpi_tile("Employee NPS", f"{nps}", "Promoters vs Detractors")
-        with c[2]: kpi_tile("Satisfaction", f"{avg_sat:.1f}/10", "Avg this month")
-        with c[3]: kpi_tile("Mood", f"{avg_mood:.1f}/5", "Avg this month")
-        with c[4]: kpi_tile("Goal Progress", f"{avg_goal:.1f}/10", "Derived / reported")
-        with c[5]: kpi_tile("Critical", f"{critical}", "Needs action")
-        with c[6]: kpi_tile("Watchlist", f"{watch}", "Monitor closely")
+        avg_sat = round(df_dash["Sat_Score"].mean(), 2)
+        avg_mood = round(df_dash["Mood_Score"].mean(), 2)
+        avg_hi = round(df_dash["Health_Index"].mean(), 1)
 
-        st.divider()
+        red = int((df_dash["Risk_Level"] == "Red").sum())
+        amber = int((df_dash["Risk_Level"] == "Amber").sum())
+        green = int((df_dash["Risk_Level"] == "Green").sum())
 
-        # org trend + dept health
-        tr = df_scoped_window.groupby(["PeriodDate","_PeriodLabel"], as_index=False).agg(
-            Health=("Health_Index","mean"),
-            Sat=("Sat_Score","mean"),
-            Mood=("Mood_Score","mean"),
-            Responses=("Name","count")
-        ).sort_values("PeriodDate")
-
-        col1, col2 = st.columns(2)
-        fig1 = px.line(tr, x="_PeriodLabel", y="Health", markers=True, title="Health Index Trend")
-        fig2 = px.line(tr, x="_PeriodLabel", y="Sat", markers=True, title="Satisfaction Trend")
-        col1.plotly_chart(fig1, use_container_width=True, key="exec_health_trend")
-        col2.plotly_chart(fig2, use_container_width=True, key="exec_sat_trend")
-
-        st.divider()
-
-        dept = base.groupby("Department", as_index=False).agg(
-            Health=("Health_Index","mean"),
-            Sat=("Sat_Score","mean"),
-            Mood=("Mood_Score","mean"),
-            Headcount=("Name","nunique")
-        ).sort_values("Health", ascending=True)
-
-        if not dept.empty:
-            figd = px.bar(dept, x="Department", y="Health", color="Health",
-                          color_continuous_scale="RdYlGn", title="Department Health (Current Month)")
-            st.plotly_chart(figd, use_container_width=True, key="exec_dept_health")
-
-        st.divider()
-
-        wl = base[base["Risk_Level"].isin(["Critical","Watchlist"])].copy()
-        if wl.empty:
-            pill("No critical/watchlist employees in this scope/month", "green")
-        else:
-            pill(f"Critical: {critical}", "red")
-            pill(f"Watchlist: {watch}", "amber")
-            show = safe_cols(wl, ["Name","Department","Reporting Manager","Health_Index","Sat_Score","Mood_Score","Goal_Score","Risk_Level",
-                                 COL_WORKLOAD, COL_WLB])
-            st.dataframe(wl[show].sort_values(["Risk_Level","Health_Index"]), use_container_width=True, hide_index=True)
-
-
-# =========================================================
-# TAB 2: DEPARTMENT
-# =========================================================
-with tabs[1]:
-    st.markdown("### Department View")
-
-    depts_all = sorted(df["Department"].dropna().unique().tolist())
-    default_idx = depts_all.index(sel_dept) if sel_dept in depts_all else 0
-    dept_sel = st.selectbox("Select Department", depts_all, index=default_idx, key="dept_tab_select")
-
-    d_month = df_month[df_month["Department"] == dept_sel].copy()
-    d_win = df_window[df_window["Department"] == dept_sel].copy()
-
-    if d_month.empty:
-        st.warning("No data for this department in selected month.")
-    else:
-        c = st.columns(6)
-        with c[0]: kpi_tile("Health Index", f"{d_month['Health_Index'].mean():.1f}", "Dept avg")
-        with c[1]: kpi_tile("NPS", f"{compute_nps(d_month)}", "Dept NPS")
-        with c[2]: kpi_tile("Satisfaction", f"{d_month['Sat_Score'].mean():.1f}/10", "Avg")
-        with c[3]: kpi_tile("Mood", f"{d_month['Mood_Score'].mean():.1f}/5", "Avg")
-        with c[4]: kpi_tile("Headcount", f"{d_month['Name'].nunique()}", "Unique employees")
-        with c[5]: kpi_tile("Critical", f"{d_month[d_month['Risk_Level']=='Critical']['Name'].nunique()}", "This month")
-
-        st.divider()
-
-        mgr = d_month.groupby("Reporting Manager", as_index=False).agg(
-            Health=("Health_Index","mean"), Headcount=("Name","nunique")
-        ).sort_values("Health")
-
-        figm = px.bar(mgr, x="Reporting Manager", y="Health", color="Health",
-                      color_continuous_scale="RdYlGn", title="Manager Health (within department)")
-        st.plotly_chart(figm, use_container_width=True, key="dept_mgr_health")
-
-        st.divider()
-
-        tr = d_win.groupby(["PeriodDate","_PeriodLabel"], as_index=False).agg(
-            Health=("Health_Index","mean"), Sat=("Sat_Score","mean"), Mood=("Mood_Score","mean")
-        ).sort_values("PeriodDate")
-
-        col1, col2 = st.columns(2)
-        col1.plotly_chart(px.line(tr, x="_PeriodLabel", y="Health", markers=True, title="Dept Health Trend"),
-                          use_container_width=True, key="dept_health_trend")
-        col2.plotly_chart(px.line(tr, x="_PeriodLabel", y="Sat", markers=True, title="Dept Satisfaction Trend"),
-                          use_container_width=True, key="dept_sat_trend")
-
-
-# =========================================================
-# TAB 3: MANAGER
-# =========================================================
-with tabs[2]:
-    st.markdown("### Manager View")
-
-    mgrs_all = sorted(df["Reporting Manager"].dropna().unique().tolist())
-    default_idx = mgrs_all.index(sel_mgr) if sel_mgr in mgrs_all else 0
-    mgr_sel = st.selectbox("Select Manager", mgrs_all, index=default_idx, key="mgr_tab_select")
-
-    m_month = df_month[df_month["Reporting Manager"] == mgr_sel].copy()
-    m_win = df_window[df_window["Reporting Manager"] == mgr_sel].copy()
-
-    if m_month.empty:
-        st.warning("No data for this manager in selected month.")
-    else:
-        c = st.columns(6)
-        with c[0]: kpi_tile("Health Index", f"{m_month['Health_Index'].mean():.1f}", "Team avg")
-        with c[1]: kpi_tile("NPS", f"{compute_nps(m_month)}", "Team NPS")
-        with c[2]: kpi_tile("Satisfaction", f"{m_month['Sat_Score'].mean():.1f}/10", "Avg")
-        with c[3]: kpi_tile("Mood", f"{m_month['Mood_Score'].mean():.1f}/5", "Avg")
-        with c[4]: kpi_tile("Team Size", f"{m_month['Name'].nunique()}", "Unique employees")
-        with c[5]: kpi_tile("Critical", f"{m_month[m_month['Risk_Level']=='Critical']['Name'].nunique()}", "This month")
-
-        st.divider()
-
-        # risk distribution
-        fig = px.histogram(m_month, x="Risk_Level", title="Risk Distribution")
-        st.plotly_chart(fig, use_container_width=True, key="mgr_risk_dist")
-
-        st.divider()
-
-        tr = m_win.groupby(["PeriodDate","_PeriodLabel"], as_index=False).agg(
-            Health=("Health_Index","mean"), Sat=("Sat_Score","mean")
-        ).sort_values("PeriodDate")
-
-        col1, col2 = st.columns(2)
-        col1.plotly_chart(px.line(tr, x="_PeriodLabel", y="Health", markers=True, title="Team Health Trend"),
-                          use_container_width=True, key="mgr_health_trend")
-        col2.plotly_chart(px.line(tr, x="_PeriodLabel", y="Sat", markers=True, title="Team Satisfaction Trend"),
-                          use_container_width=True, key="mgr_sat_trend")
-
-
-# =========================================================
-# TAB 4: EMPLOYEE 360°
-# =========================================================
-with tabs[3]:
-    st.markdown("### Employee 360°")
-
-    all_emps = sorted(df["Name"].dropna().unique().tolist())
-    search = st.text_input("Search employee", placeholder="Type a name…", key="emp_search").strip()
-    emps = [e for e in all_emps if search.lower() in str(e).lower()] if search else all_emps
-
-    emp_sel = st.selectbox("Select Employee", ["-- Select --"] + emps, key="emp_select")
-
-    if emp_sel != "-- Select --":
-        emp = df[df["Name"] == emp_sel].copy().sort_values("_PeriodKey")
-        latest = emp.iloc[-1]
-
-        c = st.columns(4)
-        c[0].metric("Department", str(latest.get("Department","")))
-        c[1].metric("Manager", str(latest.get("Reporting Manager","")))
-        c[2].metric("Latest Period", str(latest.get("_PeriodLabel","")))
-        c[3].metric("Risk Level", str(latest.get("Risk_Level","")))
-
-        tr = emp.groupby(["PeriodDate","_PeriodLabel"], as_index=False).agg(
-            Health=("Health_Index","mean"),
-            Sat=("Sat_Score","mean"),
-            Mood=("Mood_Score","mean"),
-            Goal=("Goal_Score","mean"),
-        ).sort_values("PeriodDate")
-
-        col1, col2 = st.columns(2)
-        col1.plotly_chart(px.line(tr, x="_PeriodLabel", y="Health", markers=True, title="Health Index Trend"),
-                          use_container_width=True, key="emp_health_trend")
-        col2.plotly_chart(px.line(tr, x="_PeriodLabel", y="Sat", markers=True, title="Satisfaction Trend"),
-                          use_container_width=True, key="emp_sat_trend")
-
-        st.divider()
-        st.markdown("#### Latest Responses")
-        cols = safe_cols(emp, [
-            "_PeriodLabel", COL_SAT_TEXT, COL_MOOD_TEXT, COL_GOAL,
-            COL_ACCOMPLISH, COL_DISAPPOINT, COL_WORKLOAD, COL_WLB
+        kpi_card_grid([
+            {"title":"Avg Health Index", "value": f"{avg_hi}", "sub":"0–100 composite (Satisfaction, Mood, Goals)"},
+            {"title":"Employee NPS", "value": f"{nps}", "sub":"Promoters ≥9 vs Detractors ≤6"},
+            {"title":"Avg Satisfaction", "value": f"{avg_sat}/10", "sub":"Current scope average"},
+            {"title":"Avg Mood", "value": f"{avg_mood}/5", "sub":"Current scope average"},
         ])
-        st.dataframe(emp.sort_values("_PeriodKey", ascending=False)[cols], use_container_width=True, hide_index=True)
 
+        st.markdown('<div class="chips">', unsafe_allow_html=True)
+        st.markdown(f'<span class="chip">🧾 Responses: <b>{total}</b></span>', unsafe_allow_html=True)
+        st.markdown(f'<span class="chip">🟢 Green: <b>{green}</b></span>', unsafe_allow_html=True)
+        st.markdown(f'<span class="chip">🟠 Amber: <b>{amber}</b></span>', unsafe_allow_html=True)
+        st.markdown(f'<span class="chip">🔴 Red: <b>{red}</b></span>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
 
-# =========================================================
-# TAB 5: TRENDS
-# =========================================================
-with tabs[4]:
-    st.markdown("### Trends & Benchmarking")
+        st.divider()
 
-    league = df_month.groupby("Department", as_index=False).agg(
+        c1, c2 = st.columns([1.2, 1])
+        with c1:
+            # dept/manager bar for current scope
+            group_by = "Reporting Manager" if dash_dept != "All" else "Department"
+            g = df_dash.groupby(group_by, as_index=False)["Health_Index"].mean().sort_values("Health_Index")
+            fig = px.bar(g, x=group_by, y="Health_Index", title=f"Health Index by {group_by}")
+            st.plotly_chart(fig, use_container_width=True, key=f"exec_hi_{dash_year}_{dash_month}_{dash_dept}_{dash_mgr}")
+
+        with c2:
+            mood_col = "How are you feeling overall this month?" if "How are you feeling overall this month?" in df_dash.columns else None
+            if mood_col:
+                fig2 = px.pie(df_dash, names=mood_col, title="Mood Distribution", hole=0.4)
+                st.plotly_chart(fig2, use_container_width=True, key=f"exec_mood_{dash_year}_{dash_month}_{dash_dept}_{dash_mgr}")
+            else:
+                st.info("Mood question column not found in file.")
+
+# ============================================================
+# Org & Dept Insights (trends + comparisons)
+# ============================================================
+with tab_org:
+    st.subheader("Org & Department Insights")
+    st.caption("Trends always use the full dataset (across months). You can optionally scope by department/manager in the controls below.")
+
+    cA, cB, cC = st.columns([1,1,1])
+    with cA:
+        scope_dept = st.selectbox("Scope Department", ["All"] + sorted(df_full["Department"].dropna().unique().tolist()), key="org_scope_dept")
+    with cB:
+        scope_mgr = st.selectbox("Scope Manager", ["All"] + sorted(df_full["Reporting Manager"].dropna().unique().tolist()), key="org_scope_mgr")
+    with cC:
+        win = st.selectbox("Time window", ["last_3_months","last_6_months","last_12_months","all"], index=1, key="org_scope_win")
+
+    org_df = apply_time_window(df_full, win, LATEST_YEAR, LATEST_MONTH)
+    if scope_dept != "All":
+        org_df = org_df[org_df["Department"] == scope_dept]
+    if scope_mgr != "All":
+        org_df = org_df[org_df["Reporting Manager"] == scope_mgr]
+
+    # Trend: Health Index
+    tr = org_df.dropna(subset=["PeriodDate"]).groupby(["PeriodDate","_PeriodLabel"], as_index=False).agg(
         Health=("Health_Index","mean"),
         Sat=("Sat_Score","mean"),
         Mood=("Mood_Score","mean"),
-        Headcount=("Name","nunique"),
-    ).sort_values("Health", ascending=False)
+        Responses=("Name","count")
+    ).sort_values("PeriodDate")
 
-    if league.empty:
-        st.warning("No data for this month.")
+    col1, col2 = st.columns([1.4, 1])
+    with col1:
+        fig = px.line(tr, x="_PeriodLabel", y="Health", markers=True, title="Health Index Trend")
+        st.plotly_chart(fig, use_container_width=True, key=f"org_tr_hi_{safe_hash(str((scope_dept,scope_mgr,win)))}")
+    with col2:
+        fig = px.line(tr, x="_PeriodLabel", y="Responses", markers=True, title="Responses Trend")
+        st.plotly_chart(fig, use_container_width=True, key=f"org_tr_resp_{safe_hash(str((scope_dept,scope_mgr,win)))}")
+
+    st.divider()
+
+    # Dept comparison (latest period)
+    latest_df = df_full[df_full["_PeriodKey"] == latest_key].copy()
+    dep = latest_df.groupby("Department", as_index=False).agg(
+        Health=("Health_Index","mean"),
+        Sat=("Sat_Score","mean"),
+        Mood=("Mood_Score","mean"),
+        Responses=("Name","count"),
+        Red=("Risk_Level", lambda s: int((s=="Red").sum())),
+        Amber=("Risk_Level", lambda s: int((s=="Amber").sum()))
+    ).sort_values("Health")
+
+    c1, c2 = st.columns([1.2, 1])
+    with c1:
+        fig = px.bar(dep, x="Department", y="Health", title=f"Department Health (Latest: {LATEST_MONTH} {LATEST_YEAR})")
+        st.plotly_chart(fig, use_container_width=True, key="dep_hi_latest")
+    with c2:
+        fig = px.bar(dep, x="Department", y="Red", title="Red Risk Count by Department (Latest)")
+        st.plotly_chart(fig, use_container_width=True, key="dep_red_latest")
+
+    with st.expander("View department table (latest period)"):
+        st.dataframe(dep, use_container_width=True, hide_index=True)
+
+# ============================================================
+# Employee Explorer (search + pagination + drilldown + history)
+# ============================================================
+with tab_emp:
+    st.subheader("Employee Explorer")
+    st.caption("Browse employees in the selected dashboard scope, then drill down to view their history across months.")
+
+    # base table = df_dash scope
+    base = df_dash.copy()
+    if base.empty:
+        st.warning("No employees in this scope.")
     else:
-        st.dataframe(league, use_container_width=True, hide_index=True)
+        c1, c2, c3 = st.columns([1.2,1,1])
+        with c1:
+            q = st.text_input("Search employee", placeholder="Type a name…", key="emp_search").strip()
+        with c2:
+            page_size = st.selectbox("Rows per page", [10,25,50,100], index=1, key="emp_page_size")
+        with c3:
+            sort_opt = st.selectbox("Sort by", ["Risk_Level","Health_Index","Sat_Score","Mood_Score","Name"], index=0, key="emp_sort")
 
-        col1, col2 = st.columns(2)
-        col1.plotly_chart(px.box(df_month, x="Department", y="Sat_Score", title="Satisfaction Distribution (Current Month)"),
-                          use_container_width=True, key="trend_sat_box")
-        risk_tbl = df_month.groupby(["Department","Risk_Level"], as_index=False).agg(Employees=("Name","nunique"))
-        col2.plotly_chart(px.bar(risk_tbl, x="Department", y="Employees", color="Risk_Level", title="Risk Counts by Department"),
-                          use_container_width=True, key="trend_risk_bar")
+        view = base.copy()
+        if q:
+            view = view[view["Name"].astype(str).str.contains(q, case=False, na=False)]
 
-        tr = df_window.groupby(["PeriodDate","_PeriodLabel"], as_index=False).agg(Health=("Health_Index","mean")).sort_values("PeriodDate")
-        st.plotly_chart(px.line(tr, x="_PeriodLabel", y="Health", markers=True, title="Organization Health Trend (Window)"),
-                        use_container_width=True, key="trend_org_health")
+        # sort
+        if sort_opt == "Risk_Level":
+            order = {"Red":0,"Amber":1,"Green":2}
+            view["_rk"] = view["Risk_Level"].map(order).fillna(9)
+            view = view.sort_values(["_rk","Health_Index"], ascending=[True, True]).drop(columns=["_rk"])
+        else:
+            view = view.sort_values(sort_opt, ascending=(sort_opt!="Name"))
 
+        total = len(view)
+        pages = max(1, math.ceil(total / page_size))
+        page = st.number_input("Page", min_value=1, max_value=pages, value=1, step=1, key="emp_page")
 
-# =========================================================
-# TAB 6: PEOPLE AI COPILOT (BIG, PROFESSIONAL)
-# =========================================================
-with tabs[5]:
-    st.markdown("### People AI Copilot")
-    st.caption("Copilot uses the **full dataset** by default. Ask for scoped analysis if needed (e.g., “only for Department X”).")
+        start = (page-1)*page_size
+        end = start + page_size
+        page_df = view.iloc[start:end].copy()
 
-    # suggested prompts
-    sp1, sp2, sp3, sp4 = st.columns(4)
-    if sp1.button("Org risks this month", key="sp_org_risks"):
-        st.session_state._prefill = "Summarize organization risks for the latest month. Identify top 5 critical/watchlist employees and likely drivers."
-    if sp2.button("Department comparison", key="sp_dept_comp"):
-        st.session_state._prefill = "Compare departments on Health Index and Satisfaction for the last 6 months. Highlight outliers."
-    if sp3.button("Manager hotspots", key="sp_mgr_hotspots"):
-        st.session_state._prefill = "Which managers have the highest proportion of watchlist/critical employees over the last 6 months?"
-    if sp4.button("Employee deep-dive", key="sp_emp_dd"):
-        st.session_state._prefill = "For employee <name>, summarize trend in satisfaction/mood/goals and provide recommended actions."
+        cols = [c for c in [
+            "Name","Department","Reporting Manager",
+            "Risk_Level","Health_Index","Sat_Score","Mood_Score",
+            "How satisfied are you working at tsworks?",
+            "How are you feeling overall this month?",
+            "Goal Progress",
+            "Key Accomplishments this Month",
+            "What’s not going well or causing disappointment?"
+        ] if c in page_df.columns]
 
-    st.markdown("<div class='chat-shell'>", unsafe_allow_html=True)
+        st.dataframe(page_df[cols], use_container_width=True, hide_index=True)
 
-    # show messages
-    for i, msg in enumerate(st.session_state.messages):
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+        st.divider()
+        st.markdown("### Employee Deep Dive")
 
-    # input (prefill if a suggestion clicked)
-    prefill = st.session_state.pop("_prefill", "")
-    user_q = st.chat_input("Ask People AI…", key="copilot_input")
-    if (not user_q) and prefill:
-        user_q = prefill
-        # also show it visually
-        st.session_state.messages.append({"role": "user", "content": user_q})
-        with st.chat_message("user"):
-            st.markdown(user_q)
+        emp_list = sorted(view["Name"].dropna().unique().tolist())
+        chosen = st.selectbox("Choose an employee", ["-- Select --"] + emp_list, key="emp_choose")
+        if chosen != "-- Select --":
+            hist = df_full[df_full["Name"] == chosen].copy()
+            hist = hist.sort_values("PeriodDate", ascending=False)
+
+            top = hist.iloc[0]
+            a,b,c = st.columns(3)
+            a.metric("Employee", str(top.get("Name","")))
+            b.metric("Department", str(top.get("Department","")))
+            c.metric("Manager", str(top.get("Reporting Manager","")))
+
+            # Trend chart
+            tr = hist.dropna(subset=["PeriodDate"]).groupby(["PeriodDate","_PeriodLabel"], as_index=False).agg(
+                Health=("Health_Index","mean"),
+                Sat=("Sat_Score","mean"),
+                Mood=("Mood_Score","mean")
+            ).sort_values("PeriodDate")
+
+            c1, c2 = st.columns(2)
+            with c1:
+                fig = px.line(tr, x="_PeriodLabel", y="Health", markers=True, title="Health Index Trend")
+                st.plotly_chart(fig, use_container_width=True, key=f"emp_hi_{safe_hash(chosen)}")
+            with c2:
+                fig = px.line(tr, x="_PeriodLabel", y="Sat", markers=True, title="Satisfaction Trend")
+                st.plotly_chart(fig, use_container_width=True, key=f"emp_sat_{safe_hash(chosen)}")
+
+            # Responses by month
+            show_cols = [c for c in [
+                "How satisfied are you working at tsworks?",
+                "How are you feeling overall this month?",
+                "Goal Progress",
+                "Key Accomplishments this Month",
+                "What’s not going well or causing disappointment?",
+                "Any concerns, blockers, or risks?",
+                "Do you need support from bench resources or other teams?",
+                "How is your work-life balance?",
+                "How is your current workload?",
+                "Are you currently supporting or mentoring junior team members?",
+                "Suggestions for process or workflow improvements",
+                "Planned PTO this month and coverage plan"
+            ] if c in hist.columns]
+
+            for _, r in hist.iterrows():
+                period = f"{r.get('Month','')} {r.get('Year','')}"
+                risk = r.get("Risk_Level","")
+                hi = r.get("Health_Index","")
+                with st.expander(f"{period} • Risk: {risk} • Health: {hi}", expanded=False):
+                    for col in show_cols:
+                        st.markdown(f"**{col}**")
+                        st.write(r.get(col, "N/A"))
+
+# ============================================================
+# Watchlist (risk + trend + reasons) + Export
+# ============================================================
+with tab_watch:
+    st.subheader("Watchlist")
+    st.caption("Automated list of employees to review: low health, high risk, or deteriorating trends.")
+
+    # scope controls
+    c1, c2, c3 = st.columns([1,1,1])
+    with c1:
+        watch_scope = st.selectbox("Scope", ["Org-wide","Dashboard scope"], key="watch_scope")
+    with c2:
+        watch_top = st.selectbox("Show", [25,50,100,200], index=1, key="watch_top")
+    with c3:
+        watch_win = st.selectbox("Trend window", ["last_3_months","last_6_months"], index=0, key="watch_win")
+
+    watch_base = df_full.copy()
+    if watch_scope == "Dashboard scope":
+        # match dashboard scope
+        watch_base = df_full[(df_full["Year"] == dash_year) & (df_full["Month"] == dash_month)].copy()
+        if dash_dept != "All":
+            watch_base = watch_base[watch_base["Department"] == dash_dept]
+        if dash_mgr != "All":
+            watch_base = watch_base[watch_base["Reporting Manager"] == dash_mgr]
+
+    # latest row per employee for scoring
+    latest_per_emp = df_full.sort_values(["Name","PeriodDate"]).groupby("Name", as_index=False).tail(1).copy()
+
+    # trend deltas (last 3/6 months)
+    tw_df = apply_time_window(df_full, watch_win, LATEST_YEAR, LATEST_MONTH).copy()
+    tw_df = tw_df.dropna(subset=["PeriodDate"]).sort_values(["Name","PeriodDate"])
+
+    # compute delta from first to last within window
+    first = tw_df.groupby("Name", as_index=False).first()[["Name","Health_Index"]].rename(columns={"Health_Index":"Health_Start"})
+    last = tw_df.groupby("Name", as_index=False).last()[["Name","Health_Index","Risk_Level","Department","Reporting Manager"]].rename(columns={"Health_Index":"Health_End"})
+
+    w = last.merge(first, on="Name", how="left")
+    w["Health_Change"] = (w["Health_End"] - w["Health_Start"]).round(1)
+
+    # add mood and sat for latest
+    last_cols = ["Name","Sat_Score","Mood_Score","How are you feeling overall this month?","Goal_Score","Health_Index","Risk_Level"]
+    last_snapshot = latest_per_emp[[c for c in last_cols if c in latest_per_emp.columns]].copy()
+    w = w.merge(last_snapshot, on="Name", how="left", suffixes=("","_Latest"))
+
+    # reasons
+    def reasons(r):
+        out = []
+        hi = safe_number(r.get("Health_End"), 50) or 50
+        ch = safe_number(r.get("Health_Change"), 0) or 0
+        risk = str(r.get("Risk_Level",""))
+        mood = str(r.get("How are you feeling overall this month?","")).lower()
+        sat = safe_number(r.get("Sat_Score"), 5) or 5
+
+        if risk == "Red": out.append("Red risk")
+        if hi < 55: out.append("Low health")
+        if ch <= -10: out.append(f"Decline {ch}")
+        if "burned" in mood or "burnt" in mood: out.append("Burnout mood")
+        if sat <= 3: out.append("Low satisfaction")
+        return ", ".join(out) if out else "Review"
+
+    w["Reasons"] = w.apply(reasons, axis=1)
+
+    # rank for watchlist
+    risk_rank = {"Red":0,"Amber":1,"Green":2}
+    w["_rk"] = w["Risk_Level"].map(risk_rank).fillna(9)
+    w = w.sort_values(["_rk","Health_End","Health_Change"], ascending=[True, True, True]).drop(columns=["_rk"])
+
+    cols = [c for c in ["Name","Department","Reporting Manager","Risk_Level","Health_End","Health_Change","Sat_Score","Mood_Score","Reasons"] if c in w.columns]
+    show = w[cols].head(int(watch_top)).copy()
+
+    st.dataframe(show, use_container_width=True, hide_index=True)
+
+    # export
+    csv = show.to_csv(index=False).encode("utf-8")
+    st.download_button("Download Watchlist CSV", data=csv, file_name="watchlist.csv", mime="text/csv")
+
+# ============================================================
+# People AI Copilot (full dataset) + Pin to Saved Insights
+# ============================================================
+with tab_copilot:
+    st.subheader("People AI Copilot")
+    st.caption("Copilot uses the **full dataset** by default. Ask for scope explicitly if you want it.")
+
+    # memory
+    if "copilot_messages" not in st.session_state:
+        st.session_state.copilot_messages = []
+    if "saved_insights" not in st.session_state:
+        st.session_state.saved_insights = []
+    if "last_copilot" not in st.session_state:
+        st.session_state.last_copilot = None
+
+    # quick prompts
+    c1, c2, c3, c4 = st.columns(4)
+    quick = None
+    if c1.button("Org risks this month", use_container_width=True, key="qp1"):
+        quick = "What are the biggest organizational risks this month? Identify hotspots and drivers."
+    if c2.button("Department comparison", use_container_width=True, key="qp2"):
+        quick = "Compare departments on Health Index and Satisfaction for the last 6 months. Highlight outliers."
+    if c3.button("Manager hotspots", use_container_width=True, key="qp3"):
+        quick = "Which managers show the highest risk signals over the last 3 months? Explain why."
+    if c4.button("Employee deep-dive", use_container_width=True, key="qp4"):
+        quick = "Identify employees with declining Satisfaction or Mood in the last 3 months and summarize patterns."
+
+    # Copilot scope defaults (used only when user asks 'this month' etc.)
+    default_year = LATEST_YEAR
+    default_month = LATEST_MONTH
+
+    # Allowed schema (keeps model consistent)
+    ALLOWED_X = ["_PeriodLabel","Department","Reporting Manager","Name","Risk_Level"]
+    ALLOWED_Y = ["Health_Index_mean","Sat_Score_mean","Mood_Score_mean","count"]
+    SYSTEM = f"""
+You are the People AI Copilot for executive leadership.
+
+You MUST do one of these:
+A) If the question is ambiguous, ask ONE clarifying question and stop.
+B) If a chart is useful, output ONLY valid JSON (no other text).
+C) Otherwise output concise executive Markdown.
+
+If a chart is useful, use ONLY this JSON schema:
+{{
+  "chart_required": true,
+  "chart_type": "line" | "bar" | "pie" | "hist" | "scatter",
+  "x": one of {ALLOWED_X},
+  "y": one of {ALLOWED_Y},
+  "group_by": "Department" | "Reporting Manager" | "Risk_Level" | null,
+  "time_window": "this_month" | "last_3_months" | "last_6_months" | "last_12_months" | "all",
+  "filter": {{
+    "Department": "<optional exact value>",
+    "Reporting Manager": "<optional exact value>",
+    "Name": "<optional exact value>"
+  }},
+  "summary": "<short executive insight>"
+}}
+
+Rules:
+- For trends over time: chart_type="line", x="_PeriodLabel".
+- If the user says “this month”, interpret it as latest period in the file (default is {default_month} {default_year}) unless they specify otherwise.
+- If department comparison over time: line chart with group_by="Department".
+- If chart_required=true, output ONLY JSON.
+"""
+
+    # Chat UI
+    st.markdown('<div class="copilot-box">', unsafe_allow_html=True)
+    chat_area = st.container(height=540, border=True)
+    with chat_area:
+        for m in st.session_state.copilot_messages:
+            with st.chat_message(m["role"]):
+                st.markdown(m["content"])
+
+    user_q = st.chat_input("Ask People AI… (uses full dataset)", key="copilot_input")
+    if quick and not user_q:
+        user_q = quick
 
     if user_q:
-        if not prefill:
-            st.session_state.messages.append({"role": "user", "content": user_q})
+        st.session_state.copilot_messages.append({"role":"user","content":user_q})
+        with chat_area:
             with st.chat_message("user"):
                 st.markdown(user_q)
 
-        llm = ChatOpenAI(model="gpt-4.1-mini", openai_api_key=api_key, temperature=0)
+        with chat_area:
+            with st.chat_message("assistant"):
+                with st.spinner("Analyzing…"):
+                    llm = ChatOpenAI(model="gpt-4.1-mini", openai_api_key=api_key, temperature=0)
 
-        SYSTEM = """
-        You are a senior people analytics advisor to executive leadership.
-        
-        If the question is ambiguous, ask ONE clarifying question and stop.
-        Otherwise answer in concise executive Markdown.
-        
-        If a chart would materially help, output ONLY valid JSON (no extra text):
-        {
-          "chart_required": true,
-          "chart_type": "line" | "bar" | "pie" | "hist",
-          "x": "_PeriodLabel" | "Department" | "Reporting Manager" | "Risk_Level",
-          "y": "Health_Index_mean" | "Sat_Score_mean" | "Mood_Score_mean" | "count",
-          "group_by": "Department" | "Reporting Manager" | "Risk_Level" | null,
-          "time_window": "this_month" | "last_3_months" | "last_6_months" | "last_12_months" | "all",
-          "filter": {"Department": "<optional>", "Reporting Manager": "<optional>", "Name": "<optional>"},
-          "summary": "<short executive insight>"
-        }
-        
-        Rules:
-        - If chart_type is "line", x MUST be "_PeriodLabel".
-        - For department comparison over time:
-          - chart_type: "line"
-          - x: "_PeriodLabel"
-          - y: "Health_Index_mean" or "Sat_Score_mean"
-          - group_by: "Department"
-        - If you are unsure of a column, set group_by to null.
-        - If chart_required is true, output ONLY JSON.
-        """
+                    # dataset summary context (small + helpful)
+                    min_p = df_full["PeriodDate"].min()
+                    max_p = df_full["PeriodDate"].max()
+                    dept_list = sorted(df_full["Department"].dropna().unique().tolist())[:20]
+                    mgr_list = sorted(df_full["Reporting Manager"].dropna().unique().tolist())[:20]
 
+                    CONTEXT = f"""
+Dataset summary:
+- Period range: {min_p.date() if pd.notna(min_p) else "N/A"} to {max_p.date() if pd.notna(max_p) else "N/A"}
+- Default "this month": {default_month} {default_year}
+- Departments (sample): {dept_list}
+- Managers (sample): {mgr_list}
 
-        latest_anchor = df["PeriodDate"].max()
-        latest_label = df[df["PeriodDate"] == latest_anchor]["_PeriodLabel"].iloc[0]
-        schema = {"columns": df.columns.tolist(), "latest_period": latest_label}
+Important:
+- Copilot uses FULL dataset unless user explicitly asks to scope.
+- If user asks for a Department/Manager/Employee not present, ask ONE clarifying question.
+"""
 
-        with st.chat_message("assistant"):
-            with st.spinner("Thinking…"):
-                resp = llm.invoke([
-                    {"role": "system", "content": SYSTEM},
-                    {"role": "user", "content": json.dumps({"schema": schema, "question": user_q})}
-                ])
-                text = (resp.content or "").strip()
+                    prompt = SYSTEM + "\n\n" + CONTEXT + "\n\nUser: " + user_q
 
-                spec = extract_first_json(text)
-                if isinstance(spec, dict) and spec.get("chart_required"):
-                    chart_df = df.copy()
-                    # time window applied relative to latest month
-                    chart_df = apply_time_window(chart_df, spec.get("time_window","last_6_months"), latest_anchor)
+                    try:
+                        out = llm.invoke(prompt).content
+                    except Exception as e:
+                        st.error(f"LLM error: {e}")
+                        out = "I hit an error calling the model. Please try again."
 
-                    # optional filters inside copilot request
-                    filt = spec.get("filter") or {}
-                    if isinstance(filt, dict):
-                        for k, v in filt.items():
-                            if v and k in chart_df.columns:
-                                chart_df = chart_df[chart_df[k].astype(str) == str(v)]
+                    spec = extract_first_json(out)
 
-                    if "_PeriodLabel" not in chart_df.columns or "PeriodDate" not in chart_df.columns:chart_df = add_period_cols(chart_df)
+                    # Chart mode
+                    if isinstance(spec, dict) and spec.get("chart_required") is True:
+                        tw = spec.get("time_window","all")
+                        chart_df = apply_time_window(df_full, tw, default_year, default_month)
 
-                    fig = build_chart(chart_df, spec)
-                    st.plotly_chart(fig, use_container_width=True, key=f"copilot_chart_{len(st.session_state.messages)}")
+                        # apply optional exact filters
+                        f = spec.get("filter") or {}
+                        for k in ["Department","Reporting Manager","Name"]:
+                            if k in f and f[k]:
+                                chart_df = chart_df[chart_df[k].astype(str) == str(f[k])]
 
-                    summary = spec.get("summary", "")
-                    if summary:
-                        st.markdown(summary)
-                        st.session_state.messages.append({"role": "assistant", "content": summary})
+                        try:
+                            fig = build_chart_safe(chart_df, spec)
+                            chart_key = f"copilot_chart_{len(st.session_state.copilot_messages)}_{safe_hash(json.dumps(spec, sort_keys=True))}"
+                            st.plotly_chart(fig, use_container_width=True, key=chart_key)
+
+                            summary = (spec.get("summary") or "Chart generated.").strip()
+                            st.markdown(summary)
+
+                            st.session_state.copilot_messages.append({"role":"assistant","content":summary})
+                            st.session_state["last_copilot"] = {
+                                "type": "chart",
+                                "question": user_q,
+                                "summary": summary,
+                                "spec": spec,
+                                "fig_json": fig.to_json(),
+                                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")
+                            }
+                        except Exception as e:
+                            fallback = f"⚠️ I couldn’t render that chart. Try specifying scope (e.g., last_6_months) and fields (Department/Manager). (Debug: {e})"
+                            st.warning(fallback)
+                            st.session_state.copilot_messages.append({"role":"assistant","content":fallback})
+                            st.session_state["last_copilot"] = {
+                                "type": "text",
+                                "question": user_q,
+                                "summary": fallback,
+                                "spec": None,
+                                "fig_json": None,
+                                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")
+                            }
+
                     else:
-                        st.session_state.messages.append({"role": "assistant", "content": "Chart generated."})
-                else:
-                    st.markdown(text)
-                    st.session_state.messages.append({"role": "assistant", "content": text})
+                        # markdown mode
+                        text = out.strip()
+                        st.markdown(text)
+                        st.session_state.copilot_messages.append({"role":"assistant","content":text})
+                        st.session_state["last_copilot"] = {
+                            "type": "text",
+                            "question": user_q,
+                            "summary": text,
+                            "spec": None,
+                            "fig_json": None,
+                            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")
+                        }
 
     st.markdown("</div>", unsafe_allow_html=True)
 
+    # Pin button (outside the chat message to avoid Streamlit widget duplication)
+    st.divider()
+    col_pin, col_clear = st.columns([1,1])
+    with col_pin:
+        if st.button("📌 Pin last Copilot output to Saved Insights", use_container_width=True, key="pin_last"):
+            if st.session_state.get("last_copilot"):
+                st.session_state.saved_insights.insert(0, st.session_state.last_copilot)
+                st.success("Pinned to Saved Insights.")
+            else:
+                st.info("No Copilot output to pin yet.")
+    with col_clear:
+        if st.button("🧹 Clear Copilot conversation", use_container_width=True, key="clear_copilot"):
+            st.session_state.copilot_messages = []
+            st.session_state.last_copilot = None
+            st.rerun()
 
-# =========================================================
-# TAB 7: DATA EXPLORER (search + pagination)
-# =========================================================
-with tabs[6]:
-    st.markdown("### Data Explorer")
-    st.caption("This table follows the Dashboard Period + Scope filters.")
+# ============================================================
+# Saved Insights (pins board + export)
+# ============================================================
+with tab_saved:
+    st.subheader("Saved Insights")
+    st.caption("Pinned Copilot insights and charts for leadership review.")
 
-    exp_df = df_scoped_month.copy().sort_values(["Department","Reporting Manager","Name"])
+    saved = st.session_state.get("saved_insights", [])
+    if not saved:
+        st.info("No saved insights yet. Use the Copilot tab and click 📌 Pin.")
+    else:
+        # export all as JSON
+        if st.button("Export Saved Insights (JSON)", key="export_saved"):
+            payload = json.dumps(saved, indent=2)
+            st.download_button("Download JSON", data=payload, file_name="saved_insights.json", mime="application/json", key="dl_saved")
 
-    search = st.text_input("Search (Name / Dept / Manager)", placeholder="Type keyword…", key="explorer_search").strip()
-    if search:
-        s = search.lower()
-        exp_df = exp_df[
-            exp_df["Name"].astype(str).str.lower().str.contains(s, na=False) |
-            exp_df["Department"].astype(str).str.lower().str.contains(s, na=False) |
-            exp_df["Reporting Manager"].astype(str).str.lower().str.contains(s, na=False)
-        ]
+        for i, item in enumerate(saved):
+            title = f"{item.get('created_at','')} • {item.get('question','')[:80]}"
+            with st.expander(title, expanded=(i==0)):
+                st.markdown(f"**Question**: {item.get('question','')}")
+                st.markdown("**Insight**:")
+                st.markdown(item.get("summary",""))
 
-    st.caption(f"Rows: {len(exp_df)}")
-    page_size = st.selectbox("Rows per page", [10, 25, 50, 100], index=1, key="exp_page_size")
-    total_pages = max(1, math.ceil(len(exp_df) / page_size))
-    page = st.number_input("Page", min_value=1, max_value=total_pages, value=1, step=1, key="exp_page")
+                if item.get("type") == "chart" and item.get("fig_json"):
+                    try:
+                        fig = pio.from_json(item["fig_json"])
+                        st.plotly_chart(fig, use_container_width=True, key=f"saved_fig_{i}_{safe_hash(item.get('question',''))}")
+                    except Exception:
+                        st.info("Chart could not be restored; keeping summary only.")
 
-    start = (page - 1) * page_size
-    end = start + page_size
-    page_df = exp_df.iloc[start:end].copy()
+                c1, c2 = st.columns([1,1])
+                with c1:
+                    if st.button("Delete", key=f"del_{i}"):
+                        st.session_state.saved_insights.pop(i)
+                        st.rerun()
+                with c2:
+                    if st.button("Duplicate", key=f"dup_{i}"):
+                        st.session_state.saved_insights.insert(i+1, dict(item))
+                        st.rerun()
 
-    cols = safe_cols(page_df, [
-        "_PeriodLabel", "Name", "Department", "Reporting Manager",
-        "Health_Index", "Risk_Level", "Sat_Score", "Mood_Score", "Goal_Score",
-        COL_SAT_TEXT, COL_MOOD_TEXT, COL_GOAL, COL_WORKLOAD, COL_WLB,
-        COL_ACCOMPLISH, COL_DISAPPOINT
-    ])
-    st.dataframe(page_df[cols], use_container_width=True, hide_index=True)
+# ============================================================
+# Notes: What this app adds (executive-grade)
+# ============================================================
+with st.expander("What’s included & what’s improved (for senior management)", expanded=False):
+    st.markdown("""
+**Major improvements**
+- **Executive Snapshot cards** that don’t waste real estate (compact KPI grid).
+- Clear separation of scopes:
+  - **Dashboard scope** (sidebar) affects charts/tables.
+  - **People AI Copilot** always uses the **full dataset**.
+- **Health Index (0–100)** composite: Satisfaction + Mood + Goal Progress (heuristic if text).
+- **Risk classification**: health thresholds + burnout + negative trend overrides.
+- **Employee Explorer**: search, pagination, deep-dive with month history.
+- **Watchlist**: auto-ranked employees to review (risk + decline + reasons) + CSV export.
+- **Saved Insights**: pin Copilot outputs/charts as an executive “board”, exportable.
 
-
+**What you may want next**
+- **Action playbooks**: recommended manager conversation prompts based on risk drivers.
+- **Bench/Support signals**: detect “need support” answers and highlight capacity/coverage issues.
+- **Themes extraction**: topic clustering of “not going well / blockers” by dept/manager.
+- **Follow-up workflow**: add a “Status” and “Owner” for each watchlist item (HRBP/Manager).
+""")
