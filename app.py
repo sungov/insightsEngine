@@ -5,6 +5,7 @@ import json
 import math
 import hashlib
 from datetime import datetime
+import numpy as np
 
 import streamlit as st
 import pandas as pd
@@ -106,6 +107,18 @@ def extract_first_json(text: str):
     except Exception:
         return None
 
+def wants_chart(user_q: str) -> bool:
+    """Heuristic: user explicitly wants a chart/plot."""
+    q = (user_q or "").lower()
+    triggers = ["plot", "chart", "graph", "visual", "trend", "line chart", "bar chart", "pie chart", "histogram", "scatter"]
+    return any(t in q for t in triggers)
+
+def wants_names_list(user_q: str) -> bool:
+    """Heuristic: user wants a list/table of people/managers/etc."""
+    q = (user_q or "").lower()
+    triggers = ["which employees", "who are", "list employees", "names of", "show employees", "top employees", "employee list"]
+    return any(t in q for t in triggers)
+  
 def add_period_cols(d: pd.DataFrame) -> pd.DataFrame:
     d = d.copy()
     d["Year"] = pd.to_numeric(d["Year"], errors="coerce")
@@ -119,27 +132,43 @@ def add_period_cols(d: pd.DataFrame) -> pd.DataFrame:
     d["_PeriodLabel"] = d["Month"] + " " + d["Year"].astype("Int64").astype(str)
     return d
 
-def apply_time_window(d: pd.DataFrame, time_window: str, default_year: int, default_month: str) -> pd.DataFrame:
-    d = add_period_cols(d)
-    d = d.dropna(subset=["PeriodDate"])
-    tw = (time_window or "all").strip().lower()
+def apply_time_window(df: pd.DataFrame, tw: str, default_year: int, default_month: str) -> pd.DataFrame:
+    """Time window filter on full dataset. 'this_month' uses latest period in dataset unless user specifies."""
+    d = df.copy()
+    d = d.dropna(subset=["PeriodDate"]) if "PeriodDate" in d.columns else d
+
+    tw = (tw or "all").strip().lower()
+
+    if "PeriodDate" not in d.columns:
+        return d
 
     if tw == "this_month":
-        return d[(d["Year"] == default_year) & (d["Month"] == default_month)].copy()
-    if tw == "last_3_months":
+        # interpret as latest available in file (default passed in already)
+        # If df already has Year/Month columns normalized, use them
+        if "Year" in d.columns and "Month" in d.columns:
+            return d[(d["Year"].astype("Int64") == int(default_year)) & (d["Month"].astype(str) == str(default_month))].copy()
+        # fallback to max PeriodDate month
         end = d["PeriodDate"].max()
-        start = end - pd.DateOffset(months=3)
+        start = end.replace(day=1)
         return d[(d["PeriodDate"] >= start) & (d["PeriodDate"] <= end)].copy()
-    if tw == "last_6_months":
-        end = d["PeriodDate"].max()
-        start = end - pd.DateOffset(months=6)
-        return d[(d["PeriodDate"] >= start) & (d["PeriodDate"] <= end)].copy()
-    if tw == "last_12_months":
-        end = d["PeriodDate"].max()
-        start = end - pd.DateOffset(months=12)
-        return d[(d["PeriodDate"] >= start) & (d["PeriodDate"] <= end)].copy()
-    return d.copy()
 
+    def window_months(n):
+        end = d["PeriodDate"].max()
+        start = (end - pd.DateOffset(months=n)).replace(day=1)
+        return d[(d["PeriodDate"] >= start) & (d["PeriodDate"] <= end)].copy()
+
+    if tw == "last_3_months":
+        return window_months(3)
+    if tw == "last_6_months":
+        return window_months(6)
+    if tw == "last_12_months":
+        return window_months(12)
+
+    return d
+
+def _normalize_colname(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(s).lower())
+  
 def safe_number(x, default=None):
     try:
         if pd.isna(x): return default
@@ -245,144 +274,183 @@ def classify_risk(df: pd.DataFrame) -> pd.DataFrame:
     d["Risk_Level"] = d.apply(risk_row, axis=1)
     return d
 
-def sanitize_chart_spec(spec: dict, df_cols: list) -> dict:
-    allowed = set(df_cols)
 
+def sanitize_chart_spec(spec: dict, df: pd.DataFrame) -> dict:
+    """
+    Safety net:
+    - Map synonyms to actual columns
+    - Ensure x/y/group_by exist
+    - If invalid, downgrade to text/table mode by setting mode='answer'
+    """
+    if not isinstance(spec, dict):
+        return {"mode": "answer", "answer": "I couldn’t interpret that request."}
+
+    # allowed chart types
+    allowed_chart_types = {"line", "bar", "pie", "hist", "scatter"}
     chart_type = (spec.get("chart_type") or "line").strip().lower()
-    if chart_type not in {"line","bar","pie","hist","scatter"}:
+    if chart_type not in allowed_chart_types:
         chart_type = "line"
 
-    x = spec.get("x")
-    y = spec.get("y")
-    group_by = spec.get("group_by")
+    cols = list(df.columns)
+    norm_map = {_normalize_colname(c): c for c in cols}
 
-    # ---- SANITIZE x
-    if not x or x not in allowed:
-        if "_PeriodLabel" in allowed:
+    # synonym mapping
+    # (extend this list as you introduce new KPIs)
+    synonyms = {
+        "period": "_PeriodLabel",
+        "month": "_PeriodLabel",
+        "timelabel": "_PeriodLabel",
+        "date": "PeriodDate",
+        "dept": "Department",
+        "department": "Department",
+        "manager": "Reporting Manager",
+        "reportingmanager": "Reporting Manager",
+        "employee": "Name",
+        "name": "Name",
+        "risk": "Risk_Level",
+        "risklevel": "Risk_Level",
+        "healthindex": "Health_Index",
+        "satisfaction": "Sat_Score",
+        "mood": "Mood_Score",
+    }
+
+    def resolve_col(v):
+        if v is None:
+            return None
+        v = str(v).strip()
+        if v in cols:
+            return v
+        key = _normalize_colname(v)
+        if key in synonyms and synonyms[key] in cols:
+            return synonyms[key]
+        if key in norm_map:
+            return norm_map[key]
+        return None
+
+    x = resolve_col(spec.get("x"))
+    y_raw = spec.get("y")
+    group_by = resolve_col(spec.get("group_by")) if spec.get("group_by") else None
+
+    # resolve y: allow "Sat_Score_mean", "count", "Health_Index_mean"
+    y = None
+    y_agg = None
+    if isinstance(y_raw, str):
+        y_raw = y_raw.strip()
+        if y_raw.lower() in ["count", "responses", "total", "total_responses"]:
+            y = "count"
+            y_agg = "count"
+        else:
+            # mean suffix
+            if y_raw.endswith("_mean"):
+                base = resolve_col(y_raw.replace("_mean", ""))
+                if base:
+                    y = base
+                    y_agg = "mean"
+            else:
+                base = resolve_col(y_raw)
+                if base:
+                    y = base
+                    y_agg = None
+
+    # if x missing, choose safe default
+    if not x:
+        if "_PeriodLabel" in cols:
             x = "_PeriodLabel"
-        elif "Department" in allowed:
+        elif "Department" in cols:
             x = "Department"
         else:
-            x = next(iter(allowed))
+            # cannot chart without x
+            spec["mode"] = "answer"
+            spec["answer"] = "I can answer this in text, but I can’t find a suitable chart axis in the dataset."
+            return spec
 
-    # ---- SANITIZE group_by
-    if group_by in ["", "none", "null"]:
-        group_by = None
-    if group_by and group_by not in allowed:
-        group_by = None
+    # if y missing for chart types that need it
+    if chart_type in {"line", "bar", "scatter"} and not y:
+        # pick a default metric if exists
+        for candidate in ["Health_Index", "Sat_Score", "Mood_Score"]:
+            if candidate in cols:
+                y = candidate
+                y_agg = "mean"
+                break
+        if not y:
+            spec["mode"] = "answer"
+            spec["answer"] = "I can summarize this in text, but I can’t find a numeric metric to plot."
+            return spec
 
-    # ---- SANITIZE y (supports tokens + agg)
-    if not y:
+    # for pie, y optional; default to count
+    if chart_type == "pie" and not y:
         y = "count"
-    if isinstance(y, str):
-        y_low = y.lower()
-        ok = (
-            y_low in {"count","responses","total_responses"} or
-            y.endswith("_mean") or y.endswith("_avg") or y.endswith("_sum") or
-            y in allowed
-        )
-        if not ok:
-            if "Health_Index" in allowed:
-                y = "Health_Index_mean"
-            elif "Sat_Score" in allowed:
-                y = "Sat_Score_mean"
-            elif "Mood_Score" in allowed:
-                y = "Mood_Score_mean"
-            else:
-                y = "count"
-
-    # enforce time axis best practice for line
-    if chart_type == "line" and x in {"Month","Year","PeriodDate","_PeriodKey"} and "_PeriodLabel" in allowed:
-        x = "_PeriodLabel"
+        y_agg = "count"
 
     spec["chart_type"] = chart_type
     spec["x"] = x
     spec["y"] = y
+    spec["_y_agg"] = y_agg
     spec["group_by"] = group_by
     return spec
 
-def compute_y(series_df: pd.DataFrame, y_token: str, group_cols: list):
-    y_token = str(y_token)
-
-    if y_token.lower() in {"count","responses","total_responses"}:
-        plot_df = series_df.groupby(group_cols, as_index=False).size().rename(columns={"size":"Value"})
-        return plot_df, "Value"
-
-    agg = "mean"
-    y_col = y_token
-    if y_token.endswith("_mean"):
-        agg = "mean"
-        y_col = y_token.replace("_mean","")
-    elif y_token.endswith("_avg"):
-        agg = "mean"
-        y_col = y_token.replace("_avg","")
-    elif y_token.endswith("_sum"):
-        agg = "sum"
-        y_col = y_token.replace("_sum","")
-
-    if y_col not in series_df.columns:
-        num_cols = [c for c in series_df.columns if pd.api.types.is_numeric_dtype(series_df[c])]
-        if not num_cols:
-            plot_df = series_df.groupby(group_cols, as_index=False).size().rename(columns={"size":"Value"})
-            return plot_df, "Value"
-        y_col = num_cols[0]
-
-    plot_df = series_df.groupby(group_cols, as_index=False).agg({y_col: agg})
-    return plot_df, y_col
-
-def build_chart_safe(df_in: pd.DataFrame, spec: dict):
-    chart_df = df_in.copy()
-
-    if "_PeriodLabel" not in chart_df.columns or "PeriodDate" not in chart_df.columns:
-        chart_df = add_period_cols(chart_df)
-
-    spec = sanitize_chart_spec(spec, chart_df.columns.tolist())
-
+def build_chart_safe(df: pd.DataFrame, spec: dict):
+    """
+    Build plotly chart with aggregation + chronological month ordering if _PeriodLabel exists.
+    """
     chart_type = spec["chart_type"]
     x = spec["x"]
     y = spec["y"]
     group_by = spec.get("group_by")
+    y_agg = spec.get("_y_agg")
 
-    if x == "_PeriodLabel":
-        chart_df = chart_df.dropna(subset=["PeriodDate"])
-        group_cols = ["PeriodDate","_PeriodLabel"] + ([group_by] if group_by else [])
-        plot_df, y_plot = compute_y(chart_df, y, group_cols)
-        plot_df = plot_df.sort_values("PeriodDate")
+    d = df.copy()
 
-        if chart_type == "line":
-            return px.line(plot_df, x="_PeriodLabel", y=y_plot, color=group_by, markers=True)
-        if chart_type == "bar":
-            return px.bar(plot_df, x="_PeriodLabel", y=y_plot, color=group_by)
-        return px.bar(plot_df, x="_PeriodLabel", y=y_plot, color=group_by)
+    # chronological ordering for _PeriodLabel
+    # expects you created PeriodDate + _PeriodLabel earlier in pipeline
+    if x == "_PeriodLabel" and "PeriodDate" in d.columns and "_PeriodLabel" in d.columns:
+        sort_cols = ["PeriodDate"]
+    else:
+        sort_cols = None
 
-    if chart_type == "pie":
+    # aggregation
+    if y == "count" and y_agg == "count":
         group_cols = [x] + ([group_by] if group_by else [])
-        plot_df, y_plot = compute_y(chart_df, y, group_cols)
-        if group_by:
-            plot_df = plot_df.groupby(x, as_index=False)[y_plot].sum()
-        return px.pie(plot_df, names=x, values=y_plot, hole=0.4)
+        plot_df = d.groupby(group_cols, as_index=False).size().rename(columns={"size": "Value"})
+        if sort_cols and x == "_PeriodLabel":
+            # preserve order by PeriodDate (merge back)
+            tmp = d[["_PeriodLabel", "PeriodDate"]].drop_duplicates()
+            plot_df = plot_df.merge(tmp, on="_PeriodLabel", how="left").sort_values("PeriodDate")
+        if chart_type == "bar":
+            return px.bar(plot_df, x=x, y="Value", color=group_by, title="Count")
+        if chart_type == "pie":
+            return px.pie(plot_df, names=x, values="Value", hole=0.4, title="Count")
+        return px.line(plot_df, x=x, y="Value", color=group_by, markers=True, title="Count")
 
+    # numeric aggregation
+    if y_agg in ["mean", "sum"]:
+        group_cols = [x] + ([group_by] if group_by else [])
+        plot_df = d.groupby(group_cols, as_index=False).agg({y: y_agg})
+        if sort_cols and x == "_PeriodLabel":
+            tmp = d[["_PeriodLabel", "PeriodDate"]].drop_duplicates()
+            plot_df = plot_df.merge(tmp, on="_PeriodLabel", how="left").sort_values("PeriodDate")
+        if chart_type == "line":
+            return px.line(plot_df, x=x, y=y, color=group_by, markers=True, title=f"{y_agg.title()} {y}")
+        if chart_type == "bar":
+            return px.bar(plot_df, x=x, y=y, color=group_by, title=f"{y_agg.title()} {y}")
+        if chart_type == "scatter":
+            return px.scatter(plot_df, x=x, y=y, color=group_by, title=f"{y_agg.title()} {y}")
+        if chart_type == "pie":
+            return px.pie(plot_df, names=x, values=y, hole=0.4, title=f"{y_agg.title()} {y}")
+        if chart_type == "hist":
+            return px.histogram(d, x=y, color=group_by, title=f"Distribution of {y}")
+        return px.line(plot_df, x=x, y=y, color=group_by, markers=True)
+
+    # raw plot (no agg) fallback
     if chart_type == "hist":
-        y_col = str(y).replace("_mean","").replace("_avg","").replace("_sum","")
-        if y_col not in chart_df.columns or not pd.api.types.is_numeric_dtype(chart_df[y_col]):
-            for c in ["Health_Index","Sat_Score","Mood_Score"]:
-                if c in chart_df.columns and pd.api.types.is_numeric_dtype(chart_df[c]):
-                    y_col = c
-                    break
-        return px.histogram(chart_df, x=y_col, color=group_by)
-
+        return px.histogram(d, x=y, color=group_by, title=f"Distribution of {y}")
     if chart_type == "scatter":
-        y_col = str(y).replace("_mean","").replace("_avg","").replace("_sum","")
-        if y_col not in chart_df.columns:
-            y_col = "Health_Index" if "Health_Index" in chart_df.columns else y_col
-        return px.scatter(chart_df, x=x, y=y_col, color=group_by)
-
-    group_cols = [x] + ([group_by] if group_by else [])
-    plot_df, y_plot = compute_y(chart_df, y, group_cols)
-
+        return px.scatter(d, x=x, y=y, color=group_by, title=f"{y} vs {x}")
     if chart_type == "bar":
-        return px.bar(plot_df, x=x, y=y_plot, color=group_by)
-    return px.line(plot_df, x=x, y=y_plot, color=group_by, markers=True)
+        return px.bar(d, x=x, y=y, color=group_by, title=f"{y} by {x}")
+    if chart_type == "pie":
+        return px.pie(d, names=x, hole=0.4, title=f"{x} breakdown")
+    return px.line(d, x=x, y=y, color=group_by, markers=True, title=f"{y} trend")
 
 def kpi_row(items):
     """
@@ -864,7 +932,7 @@ with tab_watch:
 # ============================================================
 with tab_copilot:
     st.subheader("People AI Copilot")
-    st.caption("Copilot uses the **full dataset** by default. Ask for scope explicitly if you want it.")
+    st.caption("Copilot behaves like ChatGPT: it answers in text by default and only draws charts when useful (or when you ask).")
 
     # memory
     if "copilot_messages" not in st.session_state:
@@ -886,47 +954,12 @@ with tab_copilot:
     if c4.button("Employee deep-dive", use_container_width=True, key="qp4"):
         quick = "Identify employees with declining Satisfaction or Mood in the last 3 months and summarize patterns."
 
-    # Copilot scope defaults (used only when user asks 'this month' etc.)
+    # defaults (used when user says "this month")
     default_year = LATEST_YEAR
     default_month = LATEST_MONTH
 
-    # Allowed schema (keeps model consistent)
-    ALLOWED_X = ["_PeriodLabel","Department","Reporting Manager","Name","Risk_Level"]
-    ALLOWED_Y = ["Health_Index_mean","Sat_Score_mean","Mood_Score_mean","count"]
-    SYSTEM = f"""
-You are the People AI Copilot for executive leadership.
-
-You MUST do one of these:
-A) If the question is ambiguous, ask ONE clarifying question and stop.
-B) If a chart is useful, output ONLY valid JSON (no other text).
-C) Otherwise output concise executive Markdown.
-
-If a chart is useful, use ONLY this JSON schema:
-{{
-  "chart_required": true,
-  "chart_type": "line" | "bar" | "pie" | "hist" | "scatter",
-  "x": one of {ALLOWED_X},
-  "y": one of {ALLOWED_Y},
-  "group_by": "Department" | "Reporting Manager" | "Risk_Level" | null,
-  "time_window": "this_month" | "last_3_months" | "last_6_months" | "last_12_months" | "all",
-  "filter": {{
-    "Department": "<optional exact value>",
-    "Reporting Manager": "<optional exact value>",
-    "Name": "<optional exact value>"
-  }},
-  "summary": "<short executive insight>"
-}}
-
-Rules:
-- For trends over time: chart_type="line", x="_PeriodLabel".
-- If the user says “this month”, interpret it as latest period in the file (default is {default_month} {default_year}) unless they specify otherwise.
-- If department comparison over time: line chart with group_by="Department".
-- If chart_required=true, output ONLY JSON.
-"""
-
     # Chat UI
-    st.markdown('<div class="copilot-box">', unsafe_allow_html=True)
-    chat_area = st.container(height=540, border=True)
+    chat_area = st.container(height=680, border=True)
     with chat_area:
         for m in st.session_state.copilot_messages:
             with st.chat_message(m["role"]):
@@ -937,21 +970,86 @@ Rules:
         user_q = quick
 
     if user_q:
-        st.session_state.copilot_messages.append({"role":"user","content":user_q})
+        st.session_state.copilot_messages.append({"role": "user", "content": user_q})
         with chat_area:
             with st.chat_message("user"):
                 st.markdown(user_q)
 
         with chat_area:
             with st.chat_message("assistant"):
-                with st.spinner("Analyzing…"):
+                with st.spinner("Thinking…"):
                     llm = ChatOpenAI(model="gpt-4.1-mini", openai_api_key=api_key, temperature=0)
 
-                    # dataset summary context (small + helpful)
-                    min_p = df_full["PeriodDate"].min()
-                    max_p = df_full["PeriodDate"].max()
-                    dept_list = sorted(df_full["Department"].dropna().unique().tolist())[:20]
-                    mgr_list = sorted(df_full["Reporting Manager"].dropna().unique().tolist())[:20]
+                    # small, high-signal dataset context
+                    min_p = df_full["PeriodDate"].min() if "PeriodDate" in df_full.columns else None
+                    max_p = df_full["PeriodDate"].max() if "PeriodDate" in df_full.columns else None
+
+                    # Keep lists short to avoid token bloat
+                    dept_list = sorted(df_full["Department"].dropna().unique().tolist())[:25] if "Department" in df_full.columns else []
+                    mgr_list = sorted(df_full["Reporting Manager"].dropna().unique().tolist())[:25] if "Reporting Manager" in df_full.columns else []
+
+                    # dynamic allowed columns for safer charting
+                    safe_cols = [c for c in df_full.columns if c in ["_PeriodLabel","PeriodDate","Department","Reporting Manager","Name","Risk_Level","Health_Index","Sat_Score","Mood_Score"]]
+
+                    # ======================================================
+                    # IMPORTANT: New Copilot contract (ChatGPT-like)
+                    # - default: answer mode (Markdown)
+                    # - chart only if asked OR clearly better
+                    # - table for "who/which employees" style queries
+                    # ======================================================
+                    SYSTEM = f"""
+You are the People AI Copilot for executive leadership.
+
+Behave like ChatGPT/Gemini:
+- Answer in clear executive Markdown by default.
+- Only propose a chart when it materially helps (trends, comparisons, distributions) OR the user explicitly asks to plot/chart/graph/show trend.
+- When the user asks "who/which employees/managers", prefer a TABLE (names + key fields) over charts.
+
+If the request is ambiguous, ask ONE clarifying question and stop.
+
+You must return EXACTLY ONE of the following JSON objects (and nothing else):
+
+1) Clarify:
+{{
+  "mode": "clarify",
+  "question": "<one short clarifying question>"
+}}
+
+2) Answer (Markdown):
+{{
+  "mode": "answer",
+  "answer": "<executive Markdown>"
+}}
+
+3) Table:
+{{
+  "mode": "table",
+  "title": "<short title>",
+  "time_window": "this_month"|"last_3_months"|"last_6_months"|"last_12_months"|"all",
+  "filter": {{"Department": "<optional>", "Reporting Manager": "<optional>", "Name": "<optional>"}},
+  "columns": ["Name","Department","Reporting Manager","Risk_Level","Health_Index","Sat_Score","Mood_Score","Goal Progress"],
+  "rows": [{{"Name":"...","Department":"...","Reporting Manager":"...","Risk_Level":"...","Reason":"..."}}],
+  "summary": "<executive insight>"
+}}
+
+4) Chart:
+{{
+  "mode": "chart",
+  "chart_type": "line"|"bar"|"pie"|"hist"|"scatter",
+  "x": "<column name>",
+  "y": "count" | "<numeric_column>" | "<numeric_column>_mean",
+  "group_by": "<optional column name or null>",
+  "time_window": "this_month"|"last_3_months"|"last_6_months"|"last_12_months"|"all",
+  "filter": {{"Department": "<optional>", "Reporting Manager": "<optional>", "Name": "<optional>"}},
+  "summary": "<executive insight>"
+}}
+
+Rules:
+- Use full dataset unless user explicitly requests a scope.
+- If user says “this month”, interpret as latest period in file: {default_month} {default_year}.
+- If user asks for employees at risk, output mode="table" listing employees (not a bar chart).
+- Allowed safe columns include: {safe_cols}.
+"""
 
                     CONTEXT = f"""
 Dataset summary:
@@ -960,81 +1058,193 @@ Dataset summary:
 - Departments (sample): {dept_list}
 - Managers (sample): {mgr_list}
 
-Important:
-- Copilot uses FULL dataset unless user explicitly asks to scope.
-- If user asks for a Department/Manager/Employee not present, ask ONE clarifying question.
+Reminder:
+- If the user didn't specify a time window for a trend/comparison, ask one clarifying question (e.g., last 3 vs last 6 months).
 """
 
-                    prompt = SYSTEM + "\n\n" + CONTEXT + "\n\nUser: " + user_q
+                    # Heuristic routing hint (reduces chart-happy behavior)
+                    ROUTE_HINT = f"""
+Heuristic hints:
+- user_explicit_chart_request = {wants_chart(user_q)}
+- user_asking_for_names_list = {wants_names_list(user_q)}
+"""
+
+                    prompt = SYSTEM + "\n\n" + CONTEXT + "\n\n" + ROUTE_HINT + "\n\nUser: " + user_q
 
                     try:
-                        out = llm.invoke(prompt).content
+                        raw = llm.invoke(prompt).content
                     except Exception as e:
-                        st.error(f"LLM error: {e}")
-                        out = "I hit an error calling the model. Please try again."
+                        raw = json.dumps({"mode":"answer","answer":f"⚠️ I hit an error calling the model: {e}"})
 
-                    spec = extract_first_json(out)
+                    spec = extract_first_json(raw)
 
-                    # Chart mode
-                    if isinstance(spec, dict) and spec.get("chart_required") is True:
-                        tw = spec.get("time_window","all")
-                        chart_df = apply_time_window(df_full, tw, default_year, default_month)
-
-                        # apply optional exact filters
-                        f = spec.get("filter") or {}
-                        for k in ["Department","Reporting Manager","Name"]:
-                            if k in f and f[k]:
-                                chart_df = chart_df[chart_df[k].astype(str) == str(f[k])]
-
-                        try:
-                            fig = build_chart_safe(chart_df, spec)
-                            chart_key = f"copilot_chart_{len(st.session_state.copilot_messages)}_{safe_hash(json.dumps(spec, sort_keys=True))}"
-                            st.plotly_chart(fig, use_container_width=True, key=chart_key)
-
-                            summary = (spec.get("summary") or "Chart generated.").strip()
-                            st.markdown(summary)
-
-                            st.session_state.copilot_messages.append({"role":"assistant","content":summary})
-                            st.session_state["last_copilot"] = {
-                                "type": "chart",
-                                "question": user_q,
-                                "summary": summary,
-                                "spec": spec,
-                                "fig_json": fig.to_json(),
-                                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")
-                            }
-                        except Exception as e:
-                            fallback = f"⚠️ I couldn’t render that chart. Try specifying scope (e.g., last_6_months) and fields (Department/Manager). (Debug: {e})"
-                            st.warning(fallback)
-                            st.session_state.copilot_messages.append({"role":"assistant","content":fallback})
-                            st.session_state["last_copilot"] = {
-                                "type": "text",
-                                "question": user_q,
-                                "summary": fallback,
-                                "spec": None,
-                                "fig_json": None,
-                                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")
-                            }
-
-                    else:
-                        # markdown mode
-                        text = out.strip()
-                        st.markdown(text)
-                        st.session_state.copilot_messages.append({"role":"assistant","content":text})
-                        st.session_state["last_copilot"] = {
+                    # if model output is not JSON, show it (fail-soft)
+                    if not isinstance(spec, dict) or "mode" not in spec:
+                        st.markdown(raw)
+                        st.session_state.copilot_messages.append({"role":"assistant","content":raw})
+                        st.session_state.last_copilot = {
                             "type": "text",
                             "question": user_q,
-                            "summary": text,
+                            "summary": raw,
                             "spec": None,
                             "fig_json": None,
                             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")
                         }
+                    else:
+                        mode = spec.get("mode")
 
-    st.markdown("</div>", unsafe_allow_html=True)
+                        # ---------------------------
+                        # Clarify mode
+                        # ---------------------------
+                        if mode == "clarify":
+                            q = spec.get("question","Could you clarify your time window or scope?")
+                            st.markdown(q)
+                            st.session_state.copilot_messages.append({"role":"assistant","content":q})
+                            st.session_state.last_copilot = {
+                                "type": "text",
+                                "question": user_q,
+                                "summary": q,
+                                "spec": spec,
+                                "fig_json": None,
+                                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")
+                            }
 
-    # Pin button (outside the chat message to avoid Streamlit widget duplication)
+                        # ---------------------------
+                        # Answer mode
+                        # ---------------------------
+                        elif mode == "answer":
+                            ans = (spec.get("answer") or "").strip()
+                            if not ans:
+                                ans = "I can help with that — could you rephrase the question?"
+                            st.markdown(ans)
+                            st.session_state.copilot_messages.append({"role":"assistant","content":ans})
+                            st.session_state.last_copilot = {
+                                "type": "text",
+                                "question": user_q,
+                                "summary": ans,
+                                "spec": spec,
+                                "fig_json": None,
+                                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")
+                            }
+
+                        # ---------------------------
+                        # Table mode
+                        # ---------------------------
+                        elif mode == "table":
+                            title = spec.get("title","Results")
+                            st.markdown(f"#### {title}")
+
+                            tw = spec.get("time_window","all")
+                            table_df = apply_time_window(df_full, tw, default_year, default_month)
+
+                            # optional exact filters (if provided)
+                            f = spec.get("filter") or {}
+                            for k in ["Department","Reporting Manager","Name"]:
+                                if k in f and f[k] and k in table_df.columns:
+                                    table_df = table_df[table_df[k].astype(str) == str(f[k])]
+
+                            # If model provided rows explicitly, use them; else build from dataset
+                            rows = spec.get("rows") or []
+                            if rows:
+                                out_df = pd.DataFrame(rows)
+                                st.dataframe(out_df, use_container_width=True, hide_index=True)
+                            else:
+                                # fallback: show top risk/emphasis rows if asked for "at risk"
+                                # (generic fallback; no hardcoding risk only)
+                                cols = spec.get("columns") or ["Name","Department","Reporting Manager","Risk_Level","Health_Index","Sat_Score","Mood_Score","Goal Progress"]
+                                cols = [c for c in cols if c in table_df.columns]
+                                st.dataframe(table_df[cols].head(50), use_container_width=True, hide_index=True)
+
+                            summary = (spec.get("summary") or "").strip()
+                            if summary:
+                                st.markdown(summary)
+
+                            st.session_state.copilot_messages.append({
+                                "role":"assistant",
+                                "content": summary if summary else f"{title} (table)"
+                            })
+                            st.session_state.last_copilot = {
+                                "type": "table",
+                                "question": user_q,
+                                "summary": summary if summary else title,
+                                "spec": spec,
+                                "fig_json": None,
+                                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")
+                            }
+
+                        # ---------------------------
+                        # Chart mode
+                        # ---------------------------
+                        elif mode == "chart":
+                            # If user did NOT ask for a chart, enforce "chart only when needed":
+                            # allow charts for trends/compare/distribution, but not for "who/which employees"
+                            if (not wants_chart(user_q)) and wants_names_list(user_q):
+                                # override to table-like response
+                                st.markdown("You’re asking for *which people* — I’ll list them instead of charting. Tell me the time window (this month / last 3 / last 6) if you want it scoped.")
+                                st.session_state.copilot_messages.append({
+                                    "role":"assistant",
+                                    "content":"Listed people request detected; ask for time window if needed."
+                                })
+                            else:
+                                tw = spec.get("time_window","all")
+                                chart_df = apply_time_window(df_full, tw, default_year, default_month)
+
+                                # apply optional exact filters
+                                f = spec.get("filter") or {}
+                                for k in ["Department","Reporting Manager","Name"]:
+                                    if k in f and f[k] and k in chart_df.columns:
+                                        chart_df = chart_df[chart_df[k].astype(str) == str(f[k])]
+
+                                # sanitize spec against actual dataframe columns (fixes your invalid group_by issues)
+                                clean = sanitize_chart_spec(spec, chart_df)
+
+                                if clean.get("mode") == "answer":
+                                    ans = clean.get("answer","I can answer this in text. What time window should I use?")
+                                    st.markdown(ans)
+                                    st.session_state.copilot_messages.append({"role":"assistant","content":ans})
+                                else:
+                                    try:
+                                        fig = build_chart_safe(chart_df, clean)
+                                        chart_key = f"copilot_chart_{len(st.session_state.copilot_messages)}_{safe_hash(json.dumps(clean, sort_keys=True))}"
+                                        st.plotly_chart(fig, use_container_width=True, key=chart_key)
+
+                                        summary = (clean.get("summary") or " ").strip()
+                                        if summary:
+                                            st.markdown(summary)
+
+                                        st.session_state.copilot_messages.append({
+                                            "role":"assistant",
+                                            "content": summary if summary else "Chart generated."
+                                        })
+                                        st.session_state.last_copilot = {
+                                            "type": "chart",
+                                            "question": user_q,
+                                            "summary": summary if summary else "Chart generated.",
+                                            "spec": clean,
+                                            "fig_json": fig.to_json(),
+                                            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")
+                                        }
+                                    except Exception as e:
+                                        fallback = f"⚠️ I couldn’t render that chart. Try: (1) specify a time window (last_6_months), (2) choose x/y fields that exist. Debug: {e}"
+                                        st.warning(fallback)
+                                        st.session_state.copilot_messages.append({"role":"assistant","content":fallback})
+                                        st.session_state.last_copilot = {
+                                            "type": "text",
+                                            "question": user_q,
+                                            "summary": fallback,
+                                            "spec": spec,
+                                            "fig_json": None,
+                                            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")
+                                        }
+                        else:
+                            # unknown mode
+                            st.markdown("I’m not sure how to respond to that. Can you rephrase?")
+                            st.session_state.copilot_messages.append({"role":"assistant","content":"Please rephrase your question."})
+
+    # Pin + clear controls
     st.divider()
-    col_pin, col_clear = st.columns([1,1])
+    col_pin, col_clear = st.columns([1, 1])
+
     with col_pin:
         if st.button("📌 Pin last Copilot output to Saved Insights", use_container_width=True, key="pin_last"):
             if st.session_state.get("last_copilot"):
@@ -1042,6 +1252,7 @@ Important:
                 st.success("Pinned to Saved Insights.")
             else:
                 st.info("No Copilot output to pin yet.")
+
     with col_clear:
         if st.button("🧹 Clear Copilot conversation", use_container_width=True, key="clear_copilot"):
             st.session_state.copilot_messages = []
@@ -1087,6 +1298,7 @@ with tab_saved:
                     if st.button("Duplicate", key=f"dup_{i}"):
                         st.session_state.saved_insights.insert(i+1, dict(item))
                         st.rerun()
+
 
 
 
