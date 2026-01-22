@@ -452,6 +452,51 @@ def build_chart_safe(df: pd.DataFrame, spec: dict):
         return px.pie(d, names=x, hole=0.4, title=f"{x} breakdown")
     return px.line(d, x=x, y=y, color=group_by, markers=True, title=f"{y} trend")
 
+def normalize_str(x):
+    return str(x).strip() if x is not None else ""
+
+def validate_filter_value(df, col, value):
+    """Return (is_valid, normalized_value). Valid means exact match exists."""
+    if not value or col not in df.columns:
+        return True, None
+    v = normalize_str(value)
+    # Exact match check (case-insensitive)
+    series = df[col].astype(str).str.strip()
+    matches = series.str.lower() == v.lower()
+    if matches.any():
+        # return the actual canonical value from df (preserves casing)
+        return True, series[matches].iloc[0]
+    return False, v
+
+def apply_exact_filters(df, filters: dict):
+    """Apply validated exact filters. Returns (filtered_df, invalid_filters:list[(col,val)])"""
+    d = df.copy()
+    invalid = []
+    if not isinstance(filters, dict):
+        return d, invalid
+
+    for col, val in filters.items():
+        if not val or col not in d.columns:
+            continue
+        ok, canon = validate_filter_value(d, col, val)
+        if not ok:
+            invalid.append((col, val))
+            continue
+        d = d[d[col].astype(str).str.strip().str.lower() == str(canon).strip().lower()]
+    return d, invalid
+
+def safe_columns(df, cols):
+    if not cols:
+        return [c for c in ["Name","Department","Reporting Manager","Risk_Level","Health_Index","Sat_Score","Mood_Score","Goal Progress"] if c in df.columns]
+    return [c for c in cols if c in df.columns]
+
+def coerce_limit(x, default=20):
+    try:
+        x = int(x)
+        return max(1, min(x, 200))
+    except Exception:
+        return default
+      
 def kpi_row(items):
     """
     items = [{"title":..., "value":..., "sub":...}, ...]
@@ -1026,9 +1071,17 @@ You must return EXACTLY ONE of the following JSON objects (and nothing else):
   "mode": "table",
   "title": "<short title>",
   "time_window": "this_month"|"last_3_months"|"last_6_months"|"last_12_months"|"all",
-  "filter": {{"Department": "<optional>", "Reporting Manager": "<optional>", "Name": "<optional>"}},
+  "entity": "employees"|"managers"|"departments",
+  "filters": {
+    "Department": "<optional exact value>",
+    "Reporting Manager": "<optional exact value>",
+    "Name": "<optional exact value>",
+    "Risk_Level": "<optional exact value>"
+  },
   "columns": ["Name","Department","Reporting Manager","Risk_Level","Health_Index","Sat_Score","Mood_Score","Goal Progress"],
-  "rows": [{{"Name":"...","Department":"...","Reporting Manager":"...","Risk_Level":"...","Reason":"..."}}],
+  "sort_by": "<one column from columns or null>",
+  "sort_dir": "asc"|"desc",
+  "limit": 5|10|20|50,
   "summary": "<executive insight>"
 }}
 
@@ -1131,46 +1184,86 @@ Heuristic hints:
                         # Table mode
                         # ---------------------------
                         elif mode == "table":
-                            title = spec.get("title","Results")
-                            st.markdown(f"#### {title}")
+                          title = (spec.get("title") or "Results").strip()
+                          entity = (spec.get("entity") or "employees").strip().lower()
+                      
+                          tw = spec.get("time_window", "all")
+                          table_df = apply_time_window(df_full, tw, default_year, default_month)
+                      
+                          # Apply exact filters BUT validate them against real data
+                          filters = spec.get("filters") or {}
+                          table_df, invalid_filters = apply_exact_filters(table_df, filters)
+                      
+                          # If model asked for a Department/Manager/Name not present → clarify
+                          if invalid_filters:
+                              bad = ", ".join([f"{c}='{v}'" for c, v in invalid_filters])
+                              msg = f"I can’t find {bad} in the dataset. Which one did you mean? (Tip: pick from existing values or remove that filter.)"
+                              st.markdown(msg)
+                              st.session_state.copilot_messages.append({"role":"assistant","content":msg})
+                              st.session_state.last_copilot = {
+                                  "type": "text",
+                                  "question": user_q,
+                                  "summary": msg,
+                                  "spec": spec,
+                                  "fig_json": None,
+                                  "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")
+                              }
+                          else:
+                              # Choose columns safely (NO hallucinated cols)
+                              cols = safe_columns(table_df, spec.get("columns"))
+                      
+                              # Default grouping behavior by entity
+                              if entity == "managers" and "Reporting Manager" in table_df.columns:
+                                  # summarize by manager
+                                  agg_cols = {}
+                                  if "Health_Index" in table_df.columns: agg_cols["Health_Index"] = "mean"
+                                  if "Sat_Score" in table_df.columns: agg_cols["Sat_Score"] = "mean"
+                                  if "Mood_Score" in table_df.columns: agg_cols["Mood_Score"] = "mean"
+                                  out = table_df.groupby("Reporting Manager", as_index=False).agg(agg_cols) if agg_cols else table_df[["Reporting Manager"]].drop_duplicates()
+                                  out["Responses"] = table_df.groupby("Reporting Manager").size().values
+                                  display_df = out
+                              elif entity == "departments" and "Department" in table_df.columns:
+                                  agg_cols = {}
+                                  if "Health_Index" in table_df.columns: agg_cols["Health_Index"] = "mean"
+                                  if "Sat_Score" in table_df.columns: agg_cols["Sat_Score"] = "mean"
+                                  if "Mood_Score" in table_df.columns: agg_cols["Mood_Score"] = "mean"
+                                  out = table_df.groupby("Department", as_index=False).agg(agg_cols) if agg_cols else table_df[["Department"]].drop_duplicates()
+                                  out["Responses"] = table_df.groupby("Department").size().values
+                                  display_df = out
+                              else:
+                                  # employees: show raw rows (safe columns)
+                                  display_df = table_df[cols].copy()
+                      
+                              # sorting
+                              sort_by = spec.get("sort_by")
+                              sort_dir = (spec.get("sort_dir") or "desc").lower()
+                              if sort_by and sort_by in display_df.columns:
+                                  display_df = display_df.sort_values(sort_by, ascending=(sort_dir == "asc"))
+                      
+                              # limit
+                              limit = coerce_limit(spec.get("limit"), default=20)
+                              display_df = display_df.head(limit)
+                      
+                              st.markdown(f"#### {title}")
+                              st.dataframe(display_df, use_container_width=True, hide_index=True)
+                      
+                              summary = (spec.get("summary") or "").strip()
+                              if summary:
+                                  st.markdown(summary)
+                      
+                              st.session_state.copilot_messages.append({
+                                  "role":"assistant",
+                                  "content": summary if summary else f"{title} (table)"
+                              })
+                              st.session_state.last_copilot = {
+                                  "type": "table",
+                                  "question": user_q,
+                                  "summary": summary if summary else title,
+                                  "spec": spec,
+                                  "fig_json": None,
+                                  "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")
+                              }
 
-                            tw = spec.get("time_window","all")
-                            table_df = apply_time_window(df_full, tw, default_year, default_month)
-
-                            # optional exact filters (if provided)
-                            f = spec.get("filter") or {}
-                            for k in ["Department","Reporting Manager","Name"]:
-                                if k in f and f[k] and k in table_df.columns:
-                                    table_df = table_df[table_df[k].astype(str) == str(f[k])]
-
-                            # If model provided rows explicitly, use them; else build from dataset
-                            rows = spec.get("rows") or []
-                            if rows:
-                                out_df = pd.DataFrame(rows)
-                                st.dataframe(out_df, use_container_width=True, hide_index=True)
-                            else:
-                                # fallback: show top risk/emphasis rows if asked for "at risk"
-                                # (generic fallback; no hardcoding risk only)
-                                cols = spec.get("columns") or ["Name","Department","Reporting Manager","Risk_Level","Health_Index","Sat_Score","Mood_Score","Goal Progress"]
-                                cols = [c for c in cols if c in table_df.columns]
-                                st.dataframe(table_df[cols].head(50), use_container_width=True, hide_index=True)
-
-                            summary = (spec.get("summary") or "").strip()
-                            if summary:
-                                st.markdown(summary)
-
-                            st.session_state.copilot_messages.append({
-                                "role":"assistant",
-                                "content": summary if summary else f"{title} (table)"
-                            })
-                            st.session_state.last_copilot = {
-                                "type": "table",
-                                "question": user_q,
-                                "summary": summary if summary else title,
-                                "spec": spec,
-                                "fig_json": None,
-                                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")
-                            }
 
                         # ---------------------------
                         # Chart mode
@@ -1298,6 +1391,7 @@ with tab_saved:
                     if st.button("Duplicate", key=f"dup_{i}"):
                         st.session_state.saved_insights.insert(i+1, dict(item))
                         st.rerun()
+
 
 
 
