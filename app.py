@@ -1083,25 +1083,5 @@ with tab_saved:
                         st.session_state.saved_insights.insert(i+1, dict(item))
                         st.rerun()
 
-# ============================================================
-# Notes: What this app adds (executive-grade)
-# ============================================================
-with st.expander("What’s included & what’s improved (for senior management)", expanded=False):
-    st.markdown("""
-**Major improvements**
-- **Executive Snapshot cards** that don’t waste real estate (compact KPI grid).
-- Clear separation of scopes:
-  - **Dashboard scope** (sidebar) affects charts/tables.
-  - **People AI Copilot** always uses the **full dataset**.
-- **Health Index (0–100)** composite: Satisfaction + Mood + Goal Progress (heuristic if text).
-- **Risk classification**: health thresholds + burnout + negative trend overrides.
-- **Employee Explorer**: search, pagination, deep-dive with month history.
-- **Watchlist**: auto-ranked employees to review (risk + decline + reasons) + CSV export.
-- **Saved Insights**: pin Copilot outputs/charts as an executive “board”, exportable.
 
-**What you may want next**
-- **Action playbooks**: recommended manager conversation prompts based on risk drivers.
-- **Bench/Support signals**: detect “need support” answers and highlight capacity/coverage issues.
-- **Themes extraction**: topic clustering of “not going well / blockers” by dept/manager.
-- **Follow-up workflow**: add a “Status” and “Owner” for each watchlist item (HRBP/Manager).
-""")
+
