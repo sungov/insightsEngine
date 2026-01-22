@@ -375,20 +375,29 @@ with st.sidebar:
         if st.session_state.sel_year not in years:
             st.session_state.sel_year = latest_year
 
-        sel_year = st.selectbox("Year", years, index=years.index(st.session_state.sel_year), key="sel_year")
-
+        sel_year = st.selectbox(
+            "Year",
+            years,
+            index=years.index(st.session_state["sel_year"]),
+            key="sel_year"
+        )
+        
         df_year = df[df["Year"] == sel_year]
         months = [m for m in MONTHS_CANON if m in set(df_year["Month"].dropna())]
         if not months:
             months = [latest_month]
+        
+        # if current month becomes invalid after year switch, reset it
+        if st.session_state.get("sel_month") not in months:
+            st.session_state["sel_month"] = max(months, key=lambda m: MONTH_ORDER.get(m, 0))
+        
+        sel_month = st.selectbox(
+            "Month",
+            months,
+            index=months.index(st.session_state["sel_month"]),
+            key="sel_month"
+        )
 
-        if st.session_state.sel_month not in months:
-            st.session_state.sel_month = max(months, key=lambda m: MONTH_ORDER.get(m, 0))
-
-        sel_month = st.selectbox("Month", months, index=months.index(st.session_state.sel_month), key="sel_month")
-
-        st.session_state.sel_year = sel_year
-        st.session_state.sel_month = sel_month
 
     with st.expander("📈 Trend Window (for trend charts)", expanded=False):
         trend_window = st.selectbox(
@@ -836,3 +845,4 @@ with tabs[6]:
         COL_ACCOMPLISH, COL_DISAPPOINT
     ])
     st.dataframe(page_df[cols], use_container_width=True, hide_index=True)
+
