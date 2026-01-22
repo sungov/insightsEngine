@@ -1072,19 +1072,18 @@ You must return EXACTLY ONE of the following JSON objects (and nothing else):
   "title": "Employees at risk",
   "time_window": "this_month",
   "entity": "employees",
-  "filters": """{
+  "filters": {{
     "Department": null,
     "Reporting Manager": null,
     "Name": null,
     "Risk_Level": null
-  }""",
+  }},
   "columns": ["Name","Department","Reporting Manager","Risk_Level","Health_Index","Sat_Score","Mood_Score","Goal Progress"],
   "sort_by": "Health_Index",
   "sort_dir": "asc",
   "limit": 20,
   "summary": "Top risk appears concentrated in X; main drivers are low satisfaction and low goal progress."
-}
-}
+}}
 
 4) Chart:
 {{
@@ -1392,6 +1391,7 @@ with tab_saved:
                     if st.button("Duplicate", key=f"dup_{i}"):
                         st.session_state.saved_insights.insert(i+1, dict(item))
                         st.rerun()
+
 
 
 
