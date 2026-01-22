@@ -193,43 +193,51 @@ def risk_bucket(burnout_index: float) -> str:
     return "Healthy"
 
 def build_chart(chart_df: pd.DataFrame, spec: dict):
-    """
-    Chart builder for Copilot JSON mode.
-    Supports:
-      chart_type: line|bar|pie|hist
-      x: _PeriodLabel|Department|Reporting Manager|Risk_Level|Month|Year
-      y: Health_Index_mean|Sat_Score_mean|Mood_Score_mean|count
-      group_by: optional
-    """
     chart_type = (spec.get("chart_type") or "line").lower().strip()
     x = spec.get("x")
     y = spec.get("y")
     group_by = spec.get("group_by")
 
     allowed = set(chart_df.columns)
-    if x not in allowed:
-        raise ValueError(f"Invalid x column: {x}")
+
+    # ----------------------------
+    # SANITIZE x / y / group_by
+    # ----------------------------
+    # Default x if missing/invalid
+    if not x or x not in allowed:
+        if "_PeriodLabel" in allowed:
+            x = "_PeriodLabel"
+        elif "Department" in allowed:
+            x = "Department"
+        else:
+            x = next(iter(allowed))  # last resort
+
+    # If group_by invalid, drop it (don't crash)
     if group_by and group_by not in allowed:
-        raise ValueError(f"Invalid group_by column: {group_by}")
+        group_by = None
 
-    agg = None
-    y_col = y
+    # y can be things like: "Sat_Score_mean" / "Mood_Score_mean" / "count"
+    # We'll parse it later, but if it is a raw column name and invalid, fallback
+    if isinstance(y, str) and y not in allowed:
+        # allow aggregator strings (handled later)
+        if not (y.endswith("_mean") or y.endswith("_avg") or y.endswith("_sum") or y.lower() in ["count", "responses", "total_responses"]):
+            # fallback to best available numeric column
+            if "Health_Index" in allowed:
+                y = "Health_Index_mean"
+            elif "Sat_Score" in allowed:
+                y = "Sat_Score_mean"
+            elif "Mood_Score" in allowed:
+                y = "Mood_Score_mean"
+            else:
+                # as a last resort, try "count"
+                y = "count"
 
-    if isinstance(y, str):
-        yl = y.lower()
-        if yl in ["count", "responses", "total_responses"]:
-            agg = "count"
-            y_col = None
-        elif y.endswith("_mean"):
-            agg = "mean"
-            y_col = y.replace("_mean", "")
-        elif y.endswith("_avg"):
-            agg = "mean"
-            y_col = y.replace("_avg", "")
-        elif y.endswith("_sum"):
-            agg = "sum"
-            y_col = y.replace("_sum", "")
-
+    # (Optional) enforce time-series correctness:
+    if chart_type == "line" and x in ["Month", "Year", "PeriodDate", "_PeriodKey"]:
+        # prefer _PeriodLabel for display
+        if "_PeriodLabel" in allowed:
+            x = "_PeriodLabel"
+    
     if y_col and y_col not in allowed:
         raise ValueError(f"Invalid y column: {y_col}")
 
@@ -752,23 +760,34 @@ with tabs[5]:
         llm = ChatOpenAI(model="gpt-4.1-mini", openai_api_key=api_key, temperature=0)
 
         SYSTEM = """
-You are a senior people analytics advisor to executive leadership.
+        You are a senior people analytics advisor to executive leadership.
+        
+        If the question is ambiguous, ask ONE clarifying question and stop.
+        Otherwise answer in concise executive Markdown.
+        
+        If a chart would materially help, output ONLY valid JSON (no extra text):
+        {
+          "chart_required": true,
+          "chart_type": "line" | "bar" | "pie" | "hist",
+          "x": "_PeriodLabel" | "Department" | "Reporting Manager" | "Risk_Level",
+          "y": "Health_Index_mean" | "Sat_Score_mean" | "Mood_Score_mean" | "count",
+          "group_by": "Department" | "Reporting Manager" | "Risk_Level" | null,
+          "time_window": "this_month" | "last_3_months" | "last_6_months" | "last_12_months" | "all",
+          "filter": {"Department": "<optional>", "Reporting Manager": "<optional>", "Name": "<optional>"},
+          "summary": "<short executive insight>"
+        }
+        
+        Rules:
+        - If chart_type is "line", x MUST be "_PeriodLabel".
+        - For department comparison over time:
+          - chart_type: "line"
+          - x: "_PeriodLabel"
+          - y: "Health_Index_mean" or "Sat_Score_mean"
+          - group_by: "Department"
+        - If you are unsure of a column, set group_by to null.
+        - If chart_required is true, output ONLY JSON.
+        """
 
-If the question is ambiguous, ask ONE clarifying question and stop.
-Otherwise answer in concise executive Markdown.
-
-If a chart would materially help, output ONLY valid JSON (no extra text):
-{
-  "chart_required": true,
-  "chart_type": "line" | "bar" | "pie" | "hist",
-  "x": "_PeriodLabel" | "Department" | "Reporting Manager" | "Risk_Level",
-  "y": "Health_Index_mean" | "Sat_Score_mean" | "Mood_Score_mean" | "count",
-  "group_by": "<optional column>",
-  "time_window": "this_month" | "last_3_months" | "last_6_months" | "last_12_months" | "all",
-  "filter": {"Department": "<optional>", "Reporting Manager": "<optional>", "Name": "<optional>"},
-  "summary": "<short executive insight>"
-}
-"""
 
         latest_anchor = df["PeriodDate"].max()
         latest_label = df[df["PeriodDate"] == latest_anchor]["_PeriodLabel"].iloc[0]
@@ -794,6 +813,8 @@ If a chart would materially help, output ONLY valid JSON (no extra text):
                         for k, v in filt.items():
                             if v and k in chart_df.columns:
                                 chart_df = chart_df[chart_df[k].astype(str) == str(v)]
+
+                    if "_PeriodLabel" not in chart_df.columns or "PeriodDate" not in chart_df.columns:chart_df = add_period_cols(chart_df)
 
                     fig = build_chart(chart_df, spec)
                     st.plotly_chart(fig, use_container_width=True, key=f"copilot_chart_{len(st.session_state.messages)}")
@@ -845,4 +866,5 @@ with tabs[6]:
         COL_ACCOMPLISH, COL_DISAPPOINT
     ])
     st.dataframe(page_df[cols], use_container_width=True, hide_index=True)
+
 
