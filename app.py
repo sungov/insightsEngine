@@ -590,7 +590,7 @@ Rules:
         llm,
         df,  # full dataset for analysis
         verbose=False,
-        allow_dangerous_code=False,  # safer
+        allow_dangerous_code=True,  # safer
         handle_parsing_errors=True,
         agent_type="openai-tools",
         prefix=CUSTOM_PREFIX
@@ -656,3 +656,4 @@ Instructions:
 
                     except Exception as e:
                         st.error(f"Error: {e}")
+
